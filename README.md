@@ -35,7 +35,7 @@ source venv/bin/activate
 # latent-diffusion-finetune
     
 ```bash
-(venv) $ git clone https://github.com/laion-ai/latent-diffusion-finetune.git
+(venv) $ git clone https://github.com/laion-ai/ldm-finetune.git
 (venv) $ cd latent-diffusion-finetune
 (venv) $ pip install -e .
 ```
