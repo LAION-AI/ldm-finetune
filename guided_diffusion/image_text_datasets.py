@@ -1,19 +1,20 @@
+import io
 import math
 import random
+from pathlib import Path
 
-from PIL import Image
-import blobfile as bf
-from mpi4py import MPI
 import numpy as np
-from torch.utils.data import DataLoader, Dataset
+import webdataset as wds
+from braceexpand import braceexpand
+from mpi4py import MPI
+from PIL import Image
+
 
 def load_data(
     *,
     data_dir,
     batch_size,
     image_size,
-    class_cond=False,
-    deterministic=False,
     random_crop=False,
     random_flip=True,
 ):
@@ -37,97 +38,24 @@ def load_data(
     """
     if not data_dir:
         raise ValueError("unspecified data directory")
-    all_files = _list_image_files_recursively(data_dir)
-    classes = None
-    #if class_cond:
-        # Assume classes are the first part of the filename,
-        # before an underscore.
-    #    class_names = [bf.basename(path).split("_")[0] for path in all_files]
-    #    sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
-    #    classes = [sorted_classes[x] for x in class_names]
-    dataset = ImageDataset(
+
+    wds_uris = parse_data_dir(data_dir)
+    print(f"Found {len(wds_uris)} tar files of total {len(wds_uris)}")
+    dataset = load_webdataset(
         image_size,
-        all_files,
-        classes=classes,
-        shard=MPI.COMM_WORLD.Get_rank(),
-        num_shards=MPI.COMM_WORLD.Get_size(),
+        wds_uris,
         random_crop=random_crop,
         random_flip=random_flip,
+        myimg="img",
+        mycap="cap",
+        cache_dir=None,
     )
-    if deterministic:
-        loader = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=True
-        )
-    else:
-        loader = DataLoader(
-            dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
-        )
+    dataset = dataset.batched(batch_size, partial=True)
+    loader = wds.WebLoader(
+        dataset, batch_size=None, shuffle=False, num_workers=MPI.COMM_WORLD.Get_size()
+    )
     while True:
         yield from loader
-
-
-def _list_image_files_recursively(data_dir):
-    results = []
-    for entry in sorted(bf.listdir(data_dir)):
-        full_path = bf.join(data_dir, entry)
-        entry = entry.split(".")
-        ext = entry[-1].strip()
-        filename = entry[0]
-        if ext and ext.lower() in ["jpg", "jpeg", "png", "gif", "webp"]:
-            text_path = bf.join(data_dir, filename+'.txt')
-            if bf.exists(text_path):
-                results.append((full_path, text_path))
-        elif bf.isdir(full_path):
-            results.extend(_list_image_files_recursively(full_path))
-    return results
-
-
-class ImageDataset(Dataset):
-    def __init__(
-        self,
-        resolution,
-        file_paths,
-        classes=None,
-        shard=0,
-        num_shards=1,
-        random_crop=False,
-        random_flip=True,
-    ):
-        super().__init__()
-        self.resolution = resolution
-        self.local_files = file_paths[shard:][::num_shards]
-        self.local_classes = None if classes is None else classes[shard:][::num_shards]
-        self.random_crop = random_crop
-        self.random_flip = random_flip
-
-    def __len__(self):
-        return len(self.local_files)
-
-    def __getitem__(self, idx):
-        path = self.local_files[idx]
-        with bf.BlobFile(path[0], "rb") as f:
-            pil_image = Image.open(f)
-            pil_image.load()
-        pil_image = pil_image.convert("RGB")
-
-        if self.random_crop:
-            arr = random_crop_arr(pil_image, self.resolution)
-        else:
-            arr = center_crop_arr(pil_image, self.resolution)
-
-        if self.random_flip and random.random() < 0.5:
-            arr = arr[:, ::-1]
-
-        arr = arr.astype(np.float32) / 127.5 - 1
-
-        out_dict = {}
-        if self.local_classes is not None:
-            out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
-
-        with bf.BlobFile(path[1], "r") as f:
-            text = f.read().strip()
-
-        return np.transpose(arr, [2, 0, 1]), out_dict, text
 
 
 def center_crop_arr(pil_image, image_size):
@@ -172,3 +100,93 @@ def random_crop_arr(pil_image, image_size, min_crop_frac=0.8, max_crop_frac=1.0)
     crop_y = random.randrange(arr.shape[0] - image_size + 1)
     crop_x = random.randrange(arr.shape[1] - image_size + 1)
     return arr[crop_y : crop_y + image_size, crop_x : crop_x + image_size]
+
+
+def clean_caption(caption):
+    caption = caption.decode("utf-8")
+    caption = (
+        caption.replace("\n", " ")
+        .replace("\t", " ")
+        .replace("\r", " ")
+        .replace("  ", " ")
+    )
+    caption = caption.strip()
+    return caption
+
+
+def load_webdataset(
+    resolution,
+    file_paths,
+    random_crop=False,
+    random_flip=False,
+    myimg="img",
+    mycap="cap",
+    cache_dir=None,
+):
+    def bytes_to_pil_image(item):
+        pil_image = Image.open(io.BytesIO(item)).convert("RGB")
+        pil_image.load()
+        return pil_image
+
+    def filter_by_item(item):
+        if mycap not in item and "txt" not in item:
+            return False
+        if myimg not in item and "jpg" not in item:
+            return False
+        return True
+
+    def pil_transform_to_np(arr):
+        if random_crop:
+            arr = random_crop_arr(arr, resolution)
+        if random_flip and random.random() < 0.5:
+            arr = arr[:, ::-1]
+        arr = center_crop_arr(arr, resolution)  # TODO
+        arr = arr.astype(np.float32) / 127.5 - 1
+        return np.transpose(arr, [2, 0, 1])
+
+    image_text_mapping = {myimg: bytes_to_pil_image, mycap: clean_caption}
+    image_mapping = {myimg: pil_transform_to_np}
+    dataset = wds.WebDataset(
+        urls=file_paths,
+        handler=wds.warn_and_continue,
+        cache_dir=cache_dir,
+        shardshuffle=True,
+        nodesplitter=wds.split_by_worker,
+    )
+    filtered_dataset = dataset.select(filter_by_item)
+    dataset = (
+        filtered_dataset.map_dict(**image_text_mapping)
+        .map_dict(**image_mapping)
+        .to_tuple(myimg, mycap)
+    )
+    return dataset
+
+
+def parse_data_dir(data_dir):
+    if Path(data_dir).is_dir():
+        wds_uris = [
+            str(p) for p in Path(data_dir).glob("**/*") if ".tar" in str(p).lower()
+        ]
+        assert (
+            len(wds_uris) > 0
+        ), "The directory ({}) does not contain any WebDataset/.tar files.".format(
+            data_dir
+        )
+        print(
+            "Found {} WebDataset .tar(.gz) file(s) under given path {}!".format(
+                len(wds_uris), data_dir
+            )
+        )
+    elif "s3://" in data_dir.lower():
+        data_dir = f"pipe:aws s3 cp {data_dir} -"
+    elif ("http://" in data_dir.lower()) | ("https://" in data_dir.lower()):
+        wds_uris = f"pipe:curl -L -s {data_dir} || true"
+        print("Found {} http(s) link under given path!".format(len(wds_uris), data_dir))
+    elif "gs://" in data_dir.lower():
+        wds_uris = f"pipe:gsutil cat {data_dir} || true"
+        print("Found {} GCS link under given path!".format(len(wds_uris), data_dir))
+
+    if ".tar" in data_dir:
+        wds_uris = braceexpand(data_dir)
+        print("Found WebDataset .tar(.gz) file under given path {}!".format(data_dir))
+    return wds_uris
