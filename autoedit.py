@@ -581,7 +581,7 @@ def autoedit_simulation(
         f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
     )
     text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
-        aesthetic_rating, "aesthetic-predictor/vit_l_14_embeddings"
+        rating=aesthetic_rating, embed_dir="aesthetic_clip_embeds"
     ).to(device)
     text_emb_clip = average_prompt_embed_with_aesthetic_embed(
         text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
