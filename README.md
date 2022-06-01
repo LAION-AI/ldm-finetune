@@ -4,6 +4,8 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).
 
 Checkpoints are finetuned from `glid-3-xl` [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt)
 
+Aesthetic CLIP embeds are provided by [aesthetic-predictor](https://github.com/LAION-AI/aesthetic-predictor)
+
 ## Install
 
 ### virtual environment:
@@ -59,10 +61,10 @@ source venv/bin/activate
 (venv) $ wget https://dall-3.com/models/glid-3-xl/inpaint.pt
 
 # erlich
-(venv) $ wget https://dall-3.com/models/glid-3-xl/erlich.pt
+(venv) $ wget https://huggingface.co/laion/erlich/raw/main/model/ema_0.9999_120000.pt
 
 # ongo - tbd
-(venv) $ wget https://dall-3.com/models/glid-3-xl/ongo.pt
+(venv) $ wget TODO
 
 ```
 
