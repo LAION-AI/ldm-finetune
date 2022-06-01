@@ -3,21 +3,20 @@ Train a diffusion model on images.
 """
 
 import argparse
+import random
 
+import torch
+from torchvision import transforms
+
+from encoders.modules import BERTEmbedder
 from guided_diffusion import dist_util, logger
 from guided_diffusion.image_text_datasets import load_data
 from guided_diffusion.resample import create_named_schedule_sampler
-from guided_diffusion.script_util import (
-    model_and_diffusion_defaults,
-    create_model_and_diffusion,
-    args_to_dict,
-    add_dict_to_argparser,
-)
+from guided_diffusion.script_util import (add_dict_to_argparser, args_to_dict,
+                                          create_model_and_diffusion,
+                                          model_and_diffusion_defaults)
 from guided_diffusion.train_util import TrainLoop
-import torch
-import random
 
-from encoders.modules import BERTEmbedder
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -29,7 +28,7 @@ def main():
     dist_util.setup_dist()
     logger.configure()
 
-    from clip_custom import clip # make clip end up on the right device
+    from clip_custom import clip  # make clip end up on the right device
 
     logger.log("loading clip...")
     clip_model, _ = clip.load('ViT-L/14', device=dist_util.dev(), jit=False)
@@ -109,7 +108,9 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
 
     blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=(0.1, 5))
 
-    for batch, model_kwargs, text in data:
+    for batch, text in data:
+        batch = batch.to(dist_util.dev())
+        model_kwargs = {}
 
         text = list(text)
         for i in range(len(text)):
@@ -135,7 +136,7 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
                 emb_cond[i,:,:,:] = 0 # unconditional
             else:
                 if random.randint(0,100) < 50:
-                    mask = torch.randn(1, 32, 32)
+                    mask = torch.randn(1, 32, 32).to(dist_util.dev())
                     mask = blur(mask)
                     mask = (mask > 0)
                     mask = mask.repeat(4, 1, 1)
