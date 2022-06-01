@@ -4,3 +4,4 @@
 *.pycauto_outputs
 auto_outputs_npy/
 wandb/
+auto_outputs/
