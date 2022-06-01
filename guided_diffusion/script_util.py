@@ -59,13 +59,11 @@ def model_and_diffusion_defaults():
         use_scale_shift_norm=True,
         resblock_updown=False,
         use_fp16=False,
-
         use_spatial_transformer=True,
         context_dim=1280,
-
         clip_embed_dim=None,
         image_condition=False,
-        super_res_condition=False
+        super_res_condition=False,
     )
     res.update(diffusion_defaults())
     return res
@@ -161,7 +159,7 @@ def create_model(
     context_dim=1280,
     clip_embed_dim=None,
     image_condition=False,
-    super_res_condition=False
+    super_res_condition=False,
 ):
     if channel_mult == "":
         if image_size == 512:

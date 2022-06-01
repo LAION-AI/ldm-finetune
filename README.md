@@ -1,38 +1,68 @@
-# GLID-3-XL
+# Finetune Latent Diffusion
 
-GLID-3-xl is the [1.4B latent diffusion](https://github.com/CompVis/latent-diffusion#april-2022) model from CompVis back-ported to the guided diffusion codebase
+This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).
 
-The model has been split into three checkpoints. This lets us fine tune the diffusion model on new datasets and for additional tasks like inpainting and super-resolution
+Checkpoints are finetuned from `glid-3-xl` [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt)
 
-# Install
+## Install
 
-First install [latent diffusion](https://github.com/CompVis/latent-diffusion)
+### virtual environment:
+
+```bash
+python3 -m venv .venv
+source venv/bin/activate
+(venv) $
 ```
-# then
-git clone https://github.com/Jack000/glid-3-xl
-cd glid-3-xl
-pip install -e .
+
+### pytorch
+
+```bash
+(venv) $ pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu113
+```
+
+### latent-diffusion/taming-transformers
+```bash
+
+(venv) $ git clone https://github.com/CompVis/latent-diffusion.git
+(venv) $ git clone https://github.com/CompVis/taming-transformers
+(venv) $ pip install -e ./taming-transformers
+(venv) $ pip install omegaconf>=2.0.0 pytorch-lightning>=1.0.8 torch-fidelity einops
+
+```
+
+# latent-diffusion-finetune
+    
+```bash
+(venv) $ git clone https://github.com/laion-ai/latent-diffusion-finetune.git
+(venv) $ cd latent-diffusion-finetune
+(venv) $ pip install -e .
 ```
 
 # Download model files
 
 ```
 # text encoder (required)
-wget https://dall-3.com/models/glid-3-xl/bert.pt
+(venv) $ wget https://dall-3.com/models/glid-3-xl/bert.pt
 
 # ldm first stage (required)
-wget https://dall-3.com/models/glid-3-xl/kl-f8.pt
+(venv) $ wget https://dall-3.com/models/glid-3-xl/kl-f8.pt
 
 # there are several diffusion models to choose from:
 
 # original diffusion model from CompVis
-wget https://dall-3.com/models/glid-3-xl/diffusion.pt
+(venv) $ wget https://dall-3.com/models/glid-3-xl/diffusion.pt
 
 # new model fine tuned on a cleaner dataset (will not generate watermarks, split images or blurry images)
-wget https://dall-3.com/models/glid-3-xl/finetune.pt
+(venv) $ wget https://dall-3.com/models/glid-3-xl/finetune.pt
 
 # inpaint
-wget https://dall-3.com/models/glid-3-xl/inpaint.pt
+(venv) $ wget https://dall-3.com/models/glid-3-xl/inpaint.pt
+
+# erlich
+(venv) $ wget https://dall-3.com/models/glid-3-xl/erlich.pt
+
+# ongo - tbd
+(venv) $ wget https://dall-3.com/models/glid-3-xl/ongo.pt
 
 ```
 

@@ -10,11 +10,11 @@ import math
 
 import numpy as np
 import torch as th
-
-from .nn import mean_flat
-from .losses import normal_kl, discretized_gaussian_log_likelihood
-
 import torch.nn.functional as F
+
+from .losses import discretized_gaussian_log_likelihood, normal_kl
+from .nn import mean_flat
+
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
@@ -25,20 +25,18 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     Beta schedules may be added, but should not be removed or changed once
     they are committed to maintain backwards compatibility.
     """
-    #if schedule_name == "linear":
-        # Linear schedule from Ho et al, extended to work for any number of
-        # diffusion steps.
-    #    scale = 1000 / num_diffusion_timesteps
-    #    beta_start = scale * 0.0001
-    #    beta_end = scale * 0.02
-
-    #    return np.linspace(
-    #        beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64
-    #    )
     if schedule_name == "linear":
         linear_start = 0.00085
         linear_end = 0.012
-        return np.linspace(linear_start ** 0.5, linear_end ** 0.5, num_diffusion_timesteps, dtype=np.float64) ** 2
+        return (
+            np.linspace(
+                linear_start**0.5,
+                linear_end**0.5,
+                num_diffusion_timesteps,
+                dtype=np.float64,
+            )
+            ** 2
+        )
     elif schedule_name == "cosine":
         return betas_for_alpha_bar(
             num_diffusion_timesteps,
@@ -517,7 +515,7 @@ class GaussianDiffusion:
             img = noise
         else:
             img = th.randn(*shape, device=device)
-            
+
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -583,7 +581,7 @@ class GaussianDiffusion:
         noise = th.randn_like(x)
         mean_pred = (
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
-            + th.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
+            + th.sqrt(1 - alpha_bar_prev - sigma**2) * eps
         )
         nonzero_mask = (
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
@@ -687,17 +685,17 @@ class GaussianDiffusion:
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
-        
+
         indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
-        
+
         if noise is not None:
             img = noise
         else:
             img = th.randn(*shape, device=device)
-            
+
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
-            
+
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
@@ -827,15 +825,14 @@ class GaussianDiffusion:
         assert isinstance(shape, (tuple, list))
         indices = list(range(self.num_timesteps - skip_timesteps))[::-1][1:-1]
 
-        
         if noise is not None:
             img = noise
         else:
             img = th.randn(*shape, device=device)
-            
+
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
-            
+
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
@@ -918,7 +915,9 @@ class GaussianDiffusion:
             return x
 
         eps = self.get_eps(model, x, t, model_kwargs, cond_fn)
-        eps_prime = (55 * eps - 59 * old_eps[-1] + 37 * old_eps[-2] - 9 * old_eps[-3]) / 24
+        eps_prime = (
+            55 * eps - 59 * old_eps[-1] + 37 * old_eps[-2] - 9 * old_eps[-3]
+        ) / 24
 
         sample = self.pndm_transfer(x, eps_prime, t, t - 1)
         pred_xstart = self.eps_to_pred_xstart(x, eps, t)
@@ -947,22 +946,21 @@ class GaussianDiffusion:
         if device is None:
             device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
-        
+
         indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
 
-        
         if noise is not None:
             img = noise
         else:
             img = th.randn(*shape, device=device)
-            
+
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
-            
+
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
-            
+
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
@@ -1241,4 +1239,3 @@ def _extract_into_tensor_lerp(arr, timesteps, broadcast_shape):
     res_1 = _extract_into_tensor(arr, timesteps.floor().long(), broadcast_shape)
     res_2 = _extract_into_tensor(arr, timesteps.ceil().long(), broadcast_shape)
     return th.lerp(res_1, res_2, frac)
-

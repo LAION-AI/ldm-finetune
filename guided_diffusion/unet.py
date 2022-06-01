@@ -1,38 +1,50 @@
 import math
 from abc import abstractmethod
+from inspect import isfunction
 
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
+from torch import einsum, nn
 
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
-from .nn import avg_pool_nd, conv_nd, linear, normalization, timestep_embedding, zero_module, checkpoint
-
-from inspect import isfunction
-from einops import rearrange, repeat
-from torch import nn, einsum
+from .nn import (
+    avg_pool_nd,
+    checkpoint,
+    conv_nd,
+    linear,
+    normalization,
+    timestep_embedding,
+    zero_module,
+)
 
 # dummy replace
-#def convert_module_to_f16(x):
+# def convert_module_to_f16(x):
 #    pass
 
-#def convert_module_to_f32(x):
+# def convert_module_to_f32(x):
 #    pass
+
 
 def exists(val):
     return val is not None
+
 
 def default(val, d):
     if exists(val):
         return val
     return d() if isfunction(d) else d
 
+
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
         return super().forward(x.float()).type(x.dtype)
 
+
 def Normalize(in_channels):
     return GroupNorm32(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
+
 
 class LayerNorm(nn.LayerNorm):
     """
@@ -42,6 +54,7 @@ class LayerNorm(nn.LayerNorm):
     def forward(self, x: th.Tensor):
         return super().forward(x.float()).to(x.dtype)
 
+
 class Linear(nn.Linear):
     """
     Implementation that supports fp16 inputs but fp32 gains/biases.
@@ -49,6 +62,7 @@ class Linear(nn.Linear):
 
     def forward(self, x: th.Tensor):
         return super().forward(x.float()).to(x.dtype)
+
 
 class GEGLU(nn.Module):
     def __init__(self, dim_in, dim_out):
@@ -59,42 +73,40 @@ class GEGLU(nn.Module):
         x, gate = self.proj(x).chunk(2, dim=-1)
         return x * F.gelu(gate)
 
+
 class FeedForward(nn.Module):
-    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.0):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = default(dim_out, dim)
-        project_in = nn.Sequential(
-            Linear(dim, inner_dim),
-            nn.GELU()
-        ) if not glu else GEGLU(dim, inner_dim)
+        project_in = (
+            nn.Sequential(Linear(dim, inner_dim), nn.GELU())
+            if not glu
+            else GEGLU(dim, inner_dim)
+        )
 
         self.net = nn.Sequential(
-            project_in,
-            nn.Dropout(dropout),
-            Linear(inner_dim, dim_out)
+            project_in, nn.Dropout(dropout), Linear(inner_dim, dim_out)
         )
 
     def forward(self, x):
         return self.net(x)
 
+
 class CrossAttention(nn.Module):
-    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
+    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
         inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
 
-        self.scale = dim_head ** -0.5
+        self.scale = dim_head**-0.5
         self.heads = heads
 
         self.to_q = Linear(query_dim, inner_dim, bias=False)
         self.to_k = Linear(context_dim, inner_dim, bias=False)
         self.to_v = Linear(context_dim, inner_dim, bias=False)
 
-        self.to_out = nn.Sequential(
-            Linear(inner_dim, query_dim),
-            nn.Dropout(dropout)
-        )
+        self.to_out = nn.Sequential(Linear(inner_dim, query_dim), nn.Dropout(dropout))
 
     def forward(self, x, context=None, mask=None):
         h = self.heads
@@ -105,43 +117,63 @@ class CrossAttention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
 
-        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+        sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
 
         if exists(mask):
-            mask = rearrange(mask, 'b ... -> b (...)')
+            mask = rearrange(mask, "b ... -> b (...)")
             max_neg_value = -torch.finfo(sim.dtype).max
-            mask = repeat(mask, 'b j -> (b h) () j', h=h)
+            mask = repeat(mask, "b j -> (b h) () j", h=h)
             sim.masked_fill_(~mask, max_neg_value)
 
         # attention, what we cannot get enough of
         attn = sim.softmax(dim=-1)
 
-        out = einsum('b i j, b j d -> b i d', attn, v)
-        out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
+        out = einsum("b i j, b j d -> b i d", attn, v)
+        out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
         return self.to_out(out)
 
+
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True):
+    def __init__(
+        self,
+        dim,
+        n_heads,
+        d_head,
+        dropout=0.0,
+        context_dim=None,
+        gated_ff=True,
+        checkpoint=True,
+    ):
         super().__init__()
-        self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention
+        self.attn1 = CrossAttention(
+            query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout
+        )  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
-        self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
-                                    heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
+        self.attn2 = CrossAttention(
+            query_dim=dim,
+            context_dim=context_dim,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+        )  # is self-attn if context is none
         self.norm1 = LayerNorm(dim)
         self.norm2 = LayerNorm(dim)
         self.norm3 = LayerNorm(dim)
         self.checkpoint = checkpoint
 
     def forward(self, x, context=None):
-        return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+        return checkpoint(
+            self._forward, (x, context), self.parameters(), self.checkpoint
+        )
 
     def _forward(self, x, context=None):
         x = self.attn1(self.norm1(x)) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         return x
+
 
 class SpatialTransformer(nn.Module):
     """
@@ -151,29 +183,31 @@ class SpatialTransformer(nn.Module):
     Then apply standard transformer action.
     Finally, reshape to image
     """
-    def __init__(self, in_channels, n_heads, d_head,
-                 depth=1, dropout=0., context_dim=None):
+
+    def __init__(
+        self, in_channels, n_heads, d_head, depth=1, dropout=0.0, context_dim=None
+    ):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
         self.norm = Normalize(in_channels)
 
-        self.proj_in = nn.Conv2d(in_channels,
-                                 inner_dim,
-                                 kernel_size=1,
-                                 stride=1,
-                                 padding=0)
-
-        self.transformer_blocks = nn.ModuleList(
-            [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim)
-                for d in range(depth)]
+        self.proj_in = nn.Conv2d(
+            in_channels, inner_dim, kernel_size=1, stride=1, padding=0
         )
 
-        self.proj_out = zero_module(nn.Conv2d(inner_dim,
-                                              in_channels,
-                                              kernel_size=1,
-                                              stride=1,
-                                              padding=0))
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlock(
+                    inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim
+                )
+                for d in range(depth)
+            ]
+        )
+
+        self.proj_out = zero_module(
+            nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
+        )
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
@@ -181,10 +215,10 @@ class SpatialTransformer(nn.Module):
         x_in = x
         x = self.norm(x)
         x = self.proj_in(x)
-        x = rearrange(x, 'b c h w -> b (h w) c')
+        x = rearrange(x, "b c h w -> b (h w) c")
         for block in self.transformer_blocks:
             x = block(x, context=context)
-        x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
+        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w)
         x = self.proj_out(x)
         return x + x_in
 
@@ -234,7 +268,9 @@ class Upsample(nn.Module):
         self.use_conv = use_conv
         self.dims = dims
         if use_conv:
-            self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=padding)
+            self.conv = conv_nd(
+                dims, self.channels, self.out_channels, 3, padding=padding
+            )
 
     def forward(self, x):
         assert x.shape[1] == self.channels
@@ -258,7 +294,7 @@ class Downsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, use_conv, dims=2, out_channels=None,padding=1):
+    def __init__(self, channels, use_conv, dims=2, out_channels=None, padding=1):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
@@ -267,7 +303,12 @@ class Downsample(nn.Module):
         stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
             self.op = conv_nd(
-                dims, self.channels, self.out_channels, 3, stride=stride, padding=padding
+                dims,
+                self.channels,
+                self.out_channels,
+                3,
+                stride=stride,
+                padding=padding,
             )
         else:
             assert self.channels == self.out_channels
@@ -369,7 +410,6 @@ class ResBlock(TimestepBlock):
             self._forward, (x, emb), self.parameters(), self.use_checkpoint
         )
 
-
     def _forward(self, x, emb):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
@@ -391,7 +431,6 @@ class ResBlock(TimestepBlock):
             h = h + emb_out
             h = self.out_layers(h)
         return self.skip_connection(x) + h
-
 
 
 class AttentionBlock(nn.Module):
@@ -431,8 +470,10 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
-        #return pt_checkpoint(self._forward, x)  # pytorch
+        return checkpoint(
+            self._forward, (x,), self.parameters(), True
+        )  # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
+        # return pt_checkpoint(self._forward, x)  # pytorch
 
     def _forward(self, x):
         b, c, *spatial = x.shape
@@ -459,7 +500,7 @@ def count_flops_attn(model, _x, y):
     # We perform two matmuls with the same number of ops.
     # The first computes the weight matrix, the second computes
     # the combination of the value vectors.
-    matmul_ops = 2 * b * (num_spatial ** 2) * c
+    matmul_ops = 2 * b * (num_spatial**2) * c
     model.total_ops += th.DoubleTensor([matmul_ops])
 
 
@@ -547,21 +588,25 @@ class UNetModel(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
-        use_spatial_transformer=True,     # custom transformer support
-        transformer_depth=1,              # custom transformer support
-        context_dim=None,                 # custom transformer support
-        n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
-        clip_embed_dim=None,              # if set, condition on clip embeddings
-        image_condition=False,            # if set, condition on image (for inpainting)
-        super_res_condition=False,        # if set, condition on super-resolution data via middle block
+        use_spatial_transformer=True,  # custom transformer support
+        transformer_depth=1,  # custom transformer support
+        context_dim=None,  # custom transformer support
+        n_embed=None,  # custom support for prediction of discrete ids into codebook of first stage vq model
+        clip_embed_dim=None,  # if set, condition on clip embeddings
+        image_condition=False,  # if set, condition on image (for inpainting)
+        super_res_condition=False,  # if set, condition on super-resolution data via middle block
     ):
         super().__init__()
 
         if use_spatial_transformer:
-            assert context_dim is not None, 'Fool!! You forgot to include the dimension of your cross-attention conditioning...'
+            assert (
+                context_dim is not None
+            ), "Fool!! You forgot to include the dimension of your cross-attention conditioning..."
 
         if context_dim is not None:
-            assert use_spatial_transformer, 'Fool!! You forgot to use the spatial transformer for your cross-attention conditioning...'
+            assert (
+                use_spatial_transformer
+            ), "Fool!! You forgot to use the spatial transformer for your cross-attention conditioning..."
 
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
@@ -641,8 +686,14 @@ class UNetModel(nn.Module):
                             num_heads=num_heads,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
-                        ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                        )
+                        if not use_spatial_transformer
+                        else SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -679,7 +730,7 @@ class UNetModel(nn.Module):
                 Downsample(64, True, out_channels=128),
                 Downsample(256, True, out_channels=256),
             )
-            middle_ch = ch+256
+            middle_ch = ch + 256
         else:
             middle_ch = ch
 
@@ -699,9 +750,15 @@ class UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
-            ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
-                        ),
+            )
+            if not use_spatial_transformer
+            else SpatialTransformer(
+                ch,
+                num_heads,
+                dim_head,
+                depth=transformer_depth,
+                context_dim=context_dim,
+            ),
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -713,11 +770,10 @@ class UNetModel(nn.Module):
         )
         self._feature_size += ch
 
-        #if self.emb_condition_channels > 0:
+        # if self.emb_condition_channels > 0:
         #    self.middle_block_cond = middle_block
-        #else:
+        # else:
         #    self.middle_block = middle_block
-
 
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
@@ -744,8 +800,14 @@ class UNetModel(nn.Module):
                             num_heads=num_heads_upsample,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
-                        ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                        )
+                        if not use_spatial_transformer
+                        else SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -775,10 +837,10 @@ class UNetModel(nn.Module):
         )
         if self.predict_codebook_ids:
             self.id_predictor = nn.Sequential(
-            normalization(ch),
-            conv_nd(dims, model_channels, n_embed, 1),
-            #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
-        )
+                normalization(ch),
+                conv_nd(dims, model_channels, n_embed, 1),
+                # nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
+            )
 
     def convert_to_fp16(self):
         """
@@ -794,7 +856,7 @@ class UNetModel(nn.Module):
         if self.super_res_condition:
             self.external_block.apply(convert_module_to_f16)
         #    self.middle_block_cond.apply(convert_module_to_f16)
-        #else:
+        # else:
         self.middle_block.apply(convert_module_to_f16)
 
         self.output_blocks.apply(convert_module_to_f16)
@@ -812,13 +874,23 @@ class UNetModel(nn.Module):
 
         if self.super_res_condition:
             self.external_block.apply(convert_module_to_f32)
-            #self.middle_block_cond.apply(convert_module_to_f32)
-        #else:
+            # self.middle_block_cond.apply(convert_module_to_f32)
+        # else:
         self.middle_block.apply(convert_module_to_f32)
 
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, context=None, clip_embed=None, image_embed=None, super_res_embed=None, y=None,**kwargs):
+    def forward(
+        self,
+        x,
+        timesteps=None,
+        context=None,
+        clip_embed=None,
+        image_embed=None,
+        super_res_embed=None,
+        y=None,
+        **kwargs,
+    ):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -833,7 +905,7 @@ class UNetModel(nn.Module):
         assert (y is not None) == (
             self.num_classes is not None
         ), "must specify y if and only if the model is class-conditional"
-        assert timesteps is not None, 'need to implement no-timestep usage'
+        assert timesteps is not None, "need to implement no-timestep usage"
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
@@ -865,7 +937,7 @@ class UNetModel(nn.Module):
             h = module(h, emb, context)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
-            #return self.out(h), self.id_predictor(h)
+            # return self.out(h), self.id_predictor(h)
             return self.id_predictor(h)
         else:
             return self.out(h)

@@ -398,7 +398,6 @@ def prepare_edit(ldm, edit, batch_size, width, height, device):
     return image_embed
 
 
-
 def create_model_fn(model, guidance_scale):
     def model_fn(x_t, ts, **kwargs):
         half = x_t[: len(x_t) // 2]
@@ -415,6 +414,7 @@ def create_model_fn(model, guidance_scale):
 
 def population_path(prefix, i):
     return f"{BASE_DIR}/{prefix}{i:05}.png"
+
 
 def decode_and_save_image(ldm, prefix, i, image):
     image /= 0.18215
@@ -682,15 +682,17 @@ def main(args):
     else:
         texts = [args.text]
         print(f"Using text {args.text}")
-    eval_table_artifact = wandb.Artifact("glid-3-xl-table" + str(wandb.run.id), type="predictions")
-    columns=["latents", "decoded", "scores"]
+    eval_table_artifact = wandb.Artifact(
+        "glid-3-xl-table" + str(wandb.run.id), type="predictions"
+    )
+    columns = ["latents", "decoded", "scores"]
     eval_table = wandb.Table(columns=columns)
 
     for text in texts:
         print(f"Running simulation for {text}")
         # Create new run and table for each prompt.
         prefix = (
-            text.replace(" ", "_").replace(",", "_") .replace(".", "_").replace("'", "_")
+            text.replace(" ", "_").replace(",", "_").replace(".", "_").replace("'", "_")
         )
         prefix = prefix[:255]
 
@@ -721,7 +723,10 @@ def main(args):
         )
 
         eval_table.add_data(
-            [wandb.Image(candidate.detach().add(1).div(2).clamp(0, 1)) for candidate in population],
+            [
+                wandb.Image(candidate.detach().add(1).div(2).clamp(0, 1))
+                for candidate in population
+            ],
             [wandb.Image(population_path(prefix, i)) for i in range(len(population))],
             torch.cat(population_scores).detach().cpu().numpy(),
         )

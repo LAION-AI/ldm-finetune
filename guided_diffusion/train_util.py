@@ -38,7 +38,7 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        lr_warmup_steps=0
+        lr_warmup_steps=0,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -116,7 +116,9 @@ class TrainLoop:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
             if dist.get_rank() == 0:
                 if self.resume_step == 0:
-                    logger.log(f"loading model for the first time, will ignore missing layers if possible")
+                    logger.log(
+                        f"loading model for the first time, will ignore missing layers if possible"
+                    )
                     state_dict = dist_util.load_state_dict(
                         resume_checkpoint, map_location=dist_util.dev()
                     )
@@ -125,12 +127,14 @@ class TrainLoop:
                     for k in state_dict:
                         if k in model_state_dict:
                             if state_dict[k].shape != model_state_dict[k].shape:
-                                logger.info(f"Skip loading parameter: {k}, "
-                                            f"required shape: {model_state_dict[k].shape}, "
-                                            f"loaded shape: {state_dict[k].shape}")
+                                logger.info(
+                                    f"Skip loading parameter: {k}, "
+                                    f"required shape: {model_state_dict[k].shape}, "
+                                    f"loaded shape: {state_dict[k].shape}"
+                                )
                                 state_dict[k] = model_state_dict[k]
-                                if k.endswith('weight'):
-                                    kb = k.replace('weight','bias')
+                                if k.endswith("weight"):
+                                    kb = k.replace("weight", "bias")
                                     state_dict[kb] = model_state_dict[kb]
                         else:
                             logger.info(f"Dropping parameter {k}")
@@ -144,7 +148,8 @@ class TrainLoop:
                     self.model.load_state_dict(
                         dist_util.load_state_dict(
                             resume_checkpoint, map_location=dist_util.dev()
-                        ), strict=True
+                        ),
+                        strict=True,
                     )
 
         dist_util.sync_params(self.model.parameters())
@@ -154,7 +159,7 @@ class TrainLoop:
 
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
-        #if ema_checkpoint:
+        # if ema_checkpoint:
         #    if dist.get_rank() == 0:
         #        logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
         #        state_dict = dist_util.load_state_dict(
@@ -162,7 +167,7 @@ class TrainLoop:
         #        )
         #        ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
 
-        #dist_util.sync_params(ema_params)
+        # dist_util.sync_params(ema_params)
 
         if ema_checkpoint:
             logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")

@@ -12,15 +12,19 @@ from encoders.modules import BERTEmbedder
 from guided_diffusion import dist_util, logger
 from guided_diffusion.image_text_datasets import load_data
 from guided_diffusion.resample import create_named_schedule_sampler
-from guided_diffusion.script_util import (add_dict_to_argparser, args_to_dict,
-                                          create_model_and_diffusion,
-                                          model_and_diffusion_defaults)
+from guided_diffusion.script_util import (
+    add_dict_to_argparser,
+    args_to_dict,
+    create_model_and_diffusion,
+    model_and_diffusion_defaults,
+)
 from guided_diffusion.train_util import TrainLoop
 
 
 def set_requires_grad(model, value):
     for param in model.parameters():
         param.requires_grad = value
+
 
 def main():
     args = create_argparser().parse_args()
@@ -31,7 +35,7 @@ def main():
     from clip_custom import clip  # make clip end up on the right device
 
     logger.log("loading clip...")
-    clip_model, _ = clip.load('ViT-L/14', device=dist_util.dev(), jit=False)
+    clip_model, _ = clip.load("ViT-L/14", device=dist_util.dev(), jit=False)
     clip_model.eval().requires_grad_(False)
     set_requires_grad(clip_model, False)
 
@@ -49,7 +53,6 @@ def main():
 
     logger.log("loading text encoder...")
 
-    
     bert = BERTEmbedder(1280, 32)
     sd = torch.load(args.bert_model, map_location="cpu")
     bert.load_state_dict(sd)
@@ -65,7 +68,7 @@ def main():
 
     model.to(dist_util.dev())
 
-    logger.log('total base parameters', sum(x.numel() for x in model.parameters()))
+    logger.log("total base parameters", sum(x.numel() for x in model.parameters()))
 
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
@@ -98,6 +101,7 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
 
+
 def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, image_size):
     data = load_data(
         data_dir=data_dir,
@@ -114,8 +118,8 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
 
         text = list(text)
         for i in range(len(text)):
-            if random.randint(0,100) < 20:
-                text[i] = ''
+            if random.randint(0, 100) < 20:
+                text[i] = ""
 
         text_emb = bert.encode(text).to(dist_util.dev()).half()
 
@@ -132,40 +136,41 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
         emb_cond = emb.detach().clone()
 
         for i in range(batch.shape[0]):
-            if random.randint(0,100) < 20:
-                emb_cond[i,:,:,:] = 0 # unconditional
+            if random.randint(0, 100) < 20:
+                emb_cond[i, :, :, :] = 0  # unconditional
             else:
-                if random.randint(0,100) < 50:
+                if random.randint(0, 100) < 50:
                     mask = torch.randn(1, 32, 32).to(dist_util.dev())
                     mask = blur(mask)
-                    mask = (mask > 0)
+                    mask = mask > 0
                     mask = mask.repeat(4, 1, 1)
                     mask = mask.float()
                     emb_cond[i] *= mask
                 else:
                     # mask out 4 random rectangles
-                    for j in range(random.randint(1,4)):
-                        max_area = 32*16
-                        w = random.randint(1,32)
-                        h = random.randint(1,32)
-                        if w*h > max_area:
-                            if random.randint(0,100) < 50:
-                                w = max_area//h
+                    for j in range(random.randint(1, 4)):
+                        max_area = 32 * 16
+                        w = random.randint(1, 32)
+                        h = random.randint(1, 32)
+                        if w * h > max_area:
+                            if random.randint(0, 100) < 50:
+                                w = max_area // h
                             else:
-                                h = max_area//w
+                                h = max_area // w
                         if w == 32:
                             offsetx = 0
                         else:
-                            offsetx = random.randint(0, 32-w)
+                            offsetx = random.randint(0, 32 - w)
                         if h == 32:
                             offsety = 0
                         else:
-                            offsety = random.randint(0, 32-h)
-                        emb_cond[i,:, offsety:offsety+h, offsetx:offsetx+w] = 0
+                            offsety = random.randint(0, 32 - h)
+                        emb_cond[i, :, offsety : offsety + h, offsetx : offsetx + w] = 0
 
         model_kwargs["image_embed"] = emb_cond
 
         yield emb, model_kwargs
+
 
 def create_argparser():
     defaults = dict(
@@ -187,8 +192,8 @@ def create_argparser():
     )
     defaults.update(model_and_diffusion_defaults())
 
-    defaults['clip_embed_dim'] = 768
-    defaults['image_condition'] = True
+    defaults["clip_embed_dim"] = 768
+    defaults["image_condition"] = True
 
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)

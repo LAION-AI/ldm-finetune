@@ -3,25 +3,24 @@ Train a diffusion model on images.
 """
 
 import argparse
+import random
 
+import torch
+
+from encoders.modules import BERTEmbedder
 from guided_diffusion import dist_util, logger
 from guided_diffusion.image_text_datasets import load_data
 from guided_diffusion.resample import create_named_schedule_sampler
-from guided_diffusion.script_util import (
-    model_and_diffusion_defaults,
-    create_model_and_diffusion,
-    args_to_dict,
-    add_dict_to_argparser,
-)
+from guided_diffusion.script_util import (add_dict_to_argparser, args_to_dict,
+                                          create_model_and_diffusion,
+                                          model_and_diffusion_defaults)
 from guided_diffusion.train_util import TrainLoop
-import torch
-import random
 
-from encoders.modules import BERTEmbedder
 
 def set_requires_grad(model, value):
     for param in model.parameters():
         param.requires_grad = value
+
 
 def main():
     args = create_argparser().parse_args()
@@ -41,7 +40,6 @@ def main():
 
     logger.log("loading text encoder...")
 
-    
     bert = BERTEmbedder(1280, 32)
     sd = torch.load(args.bert_model, map_location="cpu")
     bert.load_state_dict(sd)
@@ -57,7 +55,7 @@ def main():
 
     model.to(dist_util.dev())
 
-    logger.log('total base parameters', sum(x.numel() for x in model.parameters()))
+    logger.log("total base parameters", sum(x.numel() for x in model.parameters()))
 
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
@@ -88,6 +86,7 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
 
+
 def load_latent_data(encoder, bert, data_dir, batch_size, image_size):
     data = load_data(
         data_dir=data_dir,
@@ -99,8 +98,8 @@ def load_latent_data(encoder, bert, data_dir, batch_size, image_size):
 
         text = list(text)
         for i in range(len(text)):
-            if random.randint(0,100) < 20:
-                text[i] = ''
+            if random.randint(0, 100) < 20:
+                text[i] = ""
 
         text_emb = bert.encode(text).to(dist_util.dev()).half()
 
@@ -111,6 +110,7 @@ def load_latent_data(encoder, bert, data_dir, batch_size, image_size):
         emb *= 0.18215
 
         yield emb, model_kwargs
+
 
 def create_argparser():
     defaults = dict(
