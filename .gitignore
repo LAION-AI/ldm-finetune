@@ -5,3 +5,5 @@
 auto_outputs_npy/
 wandb/
 auto_outputs/
+latent-diffusion/
+run_autoedit.sh
