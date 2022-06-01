@@ -1,9 +1,9 @@
 .venv/
 .vscode/
 *.pt
-*.pycauto_outputs
+*.pyc
+auto_outputs/
 auto_outputs_npy/
 wandb/
-auto_outputs/
 latent-diffusion/
 run_autoedit.sh
