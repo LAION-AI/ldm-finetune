@@ -1,0 +1,23 @@
+axial-positional-embedding==0.2.1
+albumentations>=0.4.3
+blobfile>=1.2.9
+braceexpand>=0.1.7
+Cython==0.29.30
+DALL-E==0.1
+dalle-pytorch>=1.5.2
+einops>=0.4.1
+huggingface-hub>=0.5.1
+imageio>=2.9.0
+imageio-ffmpeg>=0.4.2
+omegaconf>=2.1.2
+pytorch-lightning>=1.6
+PyYAML>=6.0
+regex>=2022.4.24
+rotary-embedding-torch>=0.1.5
+tokenizers>=0.12.1
+torchmetrics>=0.8.0
+tqdm>=4.64.0
+transformers>=4.18.0
+torch-fidelity>=0.3.0
+wandb==0.12.17
+-e git+https://github.com/CompVis/latent-diffusion.git@main#egg=latent-diffusion
