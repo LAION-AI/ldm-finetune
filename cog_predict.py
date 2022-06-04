@@ -42,19 +42,9 @@ os.environ[
 
 
 def load_aesthetic_vit_l_14_embed(
-    rating: int = 9, embed_dir: str = "aesthetic-predictor/vit_l_14_embeddings"
+    rating: int = 9, embed_dir: str = "aesthetic_clip_embeds"
 ) -> torch.Tensor:
-    assert rating in [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-    ], "rating must be in [1, 2, 3, 4, 5, 6, 7, 8, 9]"
+    assert rating in  range(1, 10), "rating must be in [1, 2, 3, 4, 5, 6, 7, 8, 9]"
     embed_path = os.path.join(embed_dir, f"rating{rating}.npy")
     text_emb_clip_aesthetic = np.load(embed_path)
     return torch.from_numpy(text_emb_clip_aesthetic)
@@ -74,7 +64,7 @@ def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
     """
     Loads the model and diffusion from an fp16 version of the model.
     """
-    model_state_dict = torch.load("ongo-eval-inpaint.pt", map_location="cpu")
+    model_state_dict = torch.load("ongo.pt", map_location="cpu")
     model_config = model_and_diffusion_defaults()
     model_params = {
         "attention_resolutions": "32,16,8",
@@ -244,7 +234,7 @@ class Predictor(cog.BasePredictor):
             f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
         )
         text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
-            aesthetic_rating, "aesthetic-predictor/vit_l_14_embeddings"
+            aesthetic_rating
         ).to(self.device)
         text_emb_clip = average_prompt_embed_with_aesthetic_embed(
             text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
@@ -313,6 +303,7 @@ class Predictor(cog.BasePredictor):
             init_skip_timesteps = 0
 
         sample_fn = self.diffusion.plms_sample_loop_progressive
+        cur_t = self.diffusion.num_timesteps - 1
         samples = sample_fn(
             model_fn,
             (batch_size * 2, 4, int(height / 8), int(width / 8)),
@@ -327,7 +318,8 @@ class Predictor(cog.BasePredictor):
 
         print("Running diffusion...")
         for j, sample in tqdm(enumerate(samples)):
-            if j % 1 == 0:
+            cur_t -= 1
+            if j % 1 == 0 and j != self.diffusion.num_timesteps - 1:
                 current_output = save_sample(sample)
                 TF.to_pil_image(current_output).save("current.png")
                 yield cog.Path("current.png")

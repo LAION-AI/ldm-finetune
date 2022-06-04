@@ -1,9 +1,21 @@
-image: "r8.im/laion-ai/..."
+image: "r8.im/afiaka87/ongo" # TODO
 build:
   gpu: true
 
   system_packages:
     - "libopenmpi-dev"
+    - "lzma-dev"
+    - "software-properties-common"
+    - "build-essential"
+    - "libnss3-dev"
+    - "zlib1g-dev"
+    - "libgdbm-dev"
+    - "libncurses5-dev"
+    - "libssl-dev"
+    - "libffi-dev"
+    - "libreadline-dev"
+    - "libsqlite3-dev"
+    - "libbz2-dev"
 
 
   python_version: "3.8"
@@ -33,11 +45,16 @@ build:
     - "tqdm==4.64.0"
     - "transformers==4.18.0"
     - "torch-fidelity==0.3.0"
+    - "wandb==0.12.17"
   
   run:
+    - pip3 install "git+https://github.com/CompVis/latent-diffusion.git"
+    - pip3 install "git+https://github.com/CompVis/taming-transformers.git"
     - mkdir -p /root/.cache/clip && wget --output-document "/root/.cache/clip/ViT-L-14.pt" "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt"
-    - python3.8 -c 'from transformers import BertTokenizerFast; t = BertTokenizerFast.from_pretrained("bert-base-uncased");'
+    - python3 -c 'from transformers import BertTokenizerFast; t = BertTokenizerFast.from_pretrained("bert-base-uncased");'
+
 
 
 # predict.py defines how predictions are run on your model
+# predict: "autoedit_api.py:Predictor"
 predict: "cog_predict.py:Predictor"
