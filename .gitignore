@@ -6,4 +6,4 @@ auto_outputs/
 auto_outputs_npy/
 wandb/
 latent-diffusion/
-run_autoedit.sh
+run_autoedit.sh.cog/
