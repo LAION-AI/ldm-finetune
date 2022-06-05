@@ -5,6 +5,7 @@ import typing
 from PIL import Image
 
 from clip_custom import clip
+from predict_util import average_prompt_embed_with_aesthetic_embed, load_aesthetic_vit_l_14_embed, prepare_edit
 
 sys.path.append("latent-diffusion")
 
@@ -123,13 +124,20 @@ class Predictor(cog.BasePredictor):
             default=None,
             description=
             "(optional) Initial image to use for the model's prediction."),
-        init_skip_fraction: float = cog.Input(
-            default=0.0,
+        guidance_scale: float = cog.Input(
+            default=5.0,
             description=
-            "Fraction of sampling steps to skip when using an init image.",
-            ge=0.0,
-            le=1.0),
-        batch_size: int = cog.Input(default=4,
+            "Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0. In general, going above 5.0 will introduce some artifacting.",
+            le=100.0,
+            ge=-20.0,
+        ),
+        steps: int = cog.Input(
+            default=100,
+            description="Number of diffusion steps to run. Due to PLMS sampling, using more than 100 steps is unnecessary and may simply produce the exact same output.",
+            le=250,
+            ge=15,
+        ),
+        batch_size: int = cog.Input(default=3,
                                     description="Batch size.",
                                     choices=[1, 2, 3, 4, 6, 8]),
         width: int = cog.Input(
@@ -142,24 +150,19 @@ class Predictor(cog.BasePredictor):
             description="Target height",
             choices=[128, 192, 256, 320, 384],
         ),
+        init_skip_fraction: float = cog.Input(
+            default=0.0,
+            description=
+            "Fraction of sampling steps to skip when using an init image. Defaults to 0.0 if init_image is not specified and 0.5 if init_image is specified.",
+            ge=0.0,
+            le=1.0),
+        aesthetic_rating: int = cog.Input(description="Aesthetic rating (1-9) - embed to use.", default=9),
+        aesthetic_weight: float = cog.Input(description="Aesthetic weight (0-1). How much to guide towards the aesthetic embed vs the prompt embed.", default=0.5),
         seed: int = cog.Input(
             default=-1,
-            description="Seed for random number generator.",
+            description="Seed for random number generator. If -1, a random seed will be chosen.",
             ge=-1,
             le=(2**32 - 1),
-        ),
-        guidance_scale: float = cog.Input(
-            default=5.0,
-            description=
-            "Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0.",
-            le=100.0,
-            ge=-20.0,
-        ),
-        steps: int = cog.Input(
-            default=50,
-            description="Number of diffusion steps to run.",
-            le=250,
-            ge=15,
         ),
     ) -> typing.Iterator[cog.Path]:
         if seed == -1:
@@ -192,9 +195,31 @@ class Predictor(cog.BasePredictor):
                                         truncate=True).to(self.device)
         text_emb_clip = self.clip_model.encode_text(text_tokens)
         text_emb_clip_blank = self.clip_model.encode_text(text_clip_blank)
-        image_embed = torch.zeros(
-            batch_size * 2, 4, height // 8, width // 8, device=self.device
+
+
+        print(
+            f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
         )
+        text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
+            rating=aesthetic_rating
+        ).to(self.device)
+        text_emb_clip = average_prompt_embed_with_aesthetic_embed(
+            text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
+        )
+        # Image Setup
+        print(f"Loading image")
+        image_embed = None
+        if init_image:
+            image_embed = prepare_edit(
+                self.ldm, init_image, batch_size, width, height, self.device
+            )
+        elif self.model_config["image_condition"]:
+            print(
+                f"Using inpaint model but no image is provided. Initializing with zeros."
+            )
+            image_embed = torch.zeros(
+                batch_size * 2, 4, height // 8, width // 8, device=self.device
+            )
         print("Packing CLIP and BERT embeddings into kwargs")
         kwargs = {
             "context":
@@ -265,9 +290,10 @@ class Predictor(cog.BasePredictor):
             init_image=init,
             skip_timesteps=init_skip_timesteps)
 
+        log_interval = 5
         print("Running diffusion...")
         for j, sample in tqdm(enumerate(samples)):
-            if j % 1 == 0:
+            if j % log_interval == 0 and j != self.diffusion.num_timesteps - 1:
                 current_output = save_sample(sample)
                 TF.to_pil_image(current_output).save("current.png")
                 yield cog.Path("current.png")
