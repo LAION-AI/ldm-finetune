@@ -2,9 +2,7 @@ import random
 import sys
 import typing
 
-import numpy as np
 from PIL import Image
-from torch.nn import functional as F
 
 from clip_custom import clip
 
@@ -20,11 +18,9 @@ from torchvision.utils import make_grid
 from tqdm.auto import tqdm
 
 from encoders.modules import BERTEmbedder
-from guided_diffusion.script_util import (
-    create_gaussian_diffusion,
-    create_model_and_diffusion,
-    model_and_diffusion_defaults,
-)
+from guided_diffusion.script_util import (create_gaussian_diffusion,
+                                          create_model_and_diffusion,
+                                          model_and_diffusion_defaults)
 
 
 def set_requires_grad(model, value):
@@ -32,32 +28,11 @@ def set_requires_grad(model, value):
         param.requires_grad = value
 
 
-normalize = transforms.Normalize(
-    mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]
-)
+normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
+                                 std=[0.26862954, 0.26130258, 0.27577711])
 
 os.environ[
-    "TOKENIZERS_PARALLELISM"
-] = "false"  # required to avoid errors with transformers lib
-
-
-def load_aesthetic_vit_l_14_embed(
-    rating: int = 9, embed_dir: str = "aesthetic_clip_embeds"
-) -> torch.Tensor:
-    assert rating in  range(1, 10), "rating must be in [1, 2, 3, 4, 5, 6, 7, 8, 9]"
-    embed_path = os.path.join(embed_dir, f"rating{rating}.npy")
-    text_emb_clip_aesthetic = np.load(embed_path)
-    return torch.from_numpy(text_emb_clip_aesthetic)
-
-
-def average_prompt_embed_with_aesthetic_embed(
-    prompt_embed: torch.Tensor,
-    aesthetic_embed: torch.Tensor,
-    aesthetic_weight: float = 0.5,
-) -> torch.Tensor:
-    return F.normalize(
-        prompt_embed * (1 - aesthetic_weight) + aesthetic_embed * aesthetic_weight
-    )
+    "TOKENIZERS_PARALLELISM"] = "false"  # required to avoid errors with transformers lib
 
 
 def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
@@ -67,27 +42,23 @@ def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
     model_state_dict = torch.load("ongo.pt", map_location="cpu")
     model_config = model_and_diffusion_defaults()
     model_params = {
-        "attention_resolutions": "32,16,8",
-        "class_cond": False,
-        "diffusion_steps": 1000,
-        "rescale_timesteps": True,
-        "timestep_respacing": "27",
-        "image_size": 32,
-        "learn_sigma": False,
-        "noise_schedule": "linear",
-        "num_channels": 320,
-        "num_heads": 8,
-        "num_res_blocks": 2,
-        "resblock_updown": False,
-        "use_fp16": True,
-        "use_scale_shift_norm": False,
-        "clip_embed_dim": 768 if "clip_proj.weight" in model_state_dict else None,
-        "image_condition": True
-        if model_state_dict["input_blocks.0.0.weight"].shape[1] == 8
-        else False,
-        "super_res_condition": True
-        if "external_block.0.0.weight" in model_state_dict
-        else False,
+        'attention_resolutions': '32,16,8',
+        'class_cond': False,
+        'diffusion_steps': 1000,
+        'rescale_timesteps': True,
+        'timestep_respacing': '27',
+        'image_size': 32,
+        'learn_sigma': False,
+        'noise_schedule': 'linear',
+        'num_channels': 320,
+        'num_heads': 8,
+        'num_res_blocks': 2,
+        'resblock_updown': False,
+        'use_fp16': True,
+        'use_scale_shift_norm': False,
+        'clip_embed_dim': 768 if 'clip_proj.weight' in model_state_dict else None,
+        'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
+        'super_res_condition': True if 'external_block.0.0.weight' in model_state_dict else False,
     }
     model_config.update(model_params)
     model, _ = create_model_and_diffusion(**model_config)
@@ -96,6 +67,7 @@ def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
 
 
 class Predictor(cog.BasePredictor):
+
     @torch.inference_mode(mode=True)
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
@@ -106,14 +78,16 @@ class Predictor(cog.BasePredictor):
         print("Loading diffusion model")
         self.model, self.model_config = load_finetune()
         self.model.requires_grad_(False).eval().to(self.device)
-        if self.model_config["use_fp16"]:
+        if self.model_config['use_fp16']:
             self.model.convert_to_fp16()
         else:
             self.model.convert_to_fp32()
 
         # Load CLIP text encoder from slim checkpoint
         print("Loading CLIP text encoder.")
-        self.clip_model, _ = clip.load("ViT-L/14", device=self.device, jit=False)
+        self.clip_model, _ = clip.load('ViT-L/14',
+                                       device=self.device,
+                                       jit=False)
         self.clip_model.eval().requires_grad_(False)
         self.clip_model.to(self.device)
         self.clip_preprocess = normalize
@@ -140,35 +114,24 @@ class Predictor(cog.BasePredictor):
     def predict(
         self,
         prompt: str = cog.Input(description="Your text prompt.", default=""),
-        aesthetic_rating: int = cog.Input(
-            description="Number between 0 and 9 representing the aesthetic rating. Will initialize the prompt CLIP embed with the respective aesthetic embed.",
-            default=9,
-            ge=0,
-            le=9,
-        ),
-        aesthetic_weight: float = cog.Input(
-            description="Weight of the aesthetic embedding in the average prompt embedding.",
-            default=0.5,
-            ge=0,
-            le=1,
-        ),
         negative: str = cog.Input(
             default="",
-            description="(optional) Negate the model's prediction for this text from the model's prediction for the target text.",
+            description=
+            "(optional) Negate the model's prediction for this text from the model's prediction for the target text."
         ),
         init_image: cog.Path = cog.Input(
             default=None,
-            description="(optional) Initial image to use for the model's prediction.",
-        ),
+            description=
+            "(optional) Initial image to use for the model's prediction."),
         init_skip_fraction: float = cog.Input(
             default=0.0,
-            description="Fraction of sampling steps to skip when using an init image.",
+            description=
+            "Fraction of sampling steps to skip when using an init image.",
             ge=0.0,
-            le=1.0,
-        ),
-        batch_size: int = cog.Input(
-            default=4, description="Batch size.", choices=[1, 2, 3, 4, 6, 8]
-        ),
+            le=1.0),
+        batch_size: int = cog.Input(default=4,
+                                    description="Batch size.",
+                                    choices=[1, 2, 3, 4, 6, 8]),
         width: int = cog.Input(
             default=256,
             description="Target width",
@@ -187,12 +150,13 @@ class Predictor(cog.BasePredictor):
         ),
         guidance_scale: float = cog.Input(
             default=5.0,
-            description="Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0.",
+            description=
+            "Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0.",
             le=100.0,
             ge=-20.0,
         ),
         steps: int = cog.Input(
-            default=150,
+            default=50,
             description="Number of diffusion steps to run.",
             le=250,
             ge=15,
@@ -215,47 +179,35 @@ class Predictor(cog.BasePredictor):
 
         # Bert context
         print("Encoding text with BERT")
-        text_emb = self.bert.encode([prompt] * batch_size).to(self.device).float()
-        text_blank = self.bert.encode([negative] * batch_size).to(self.device).float()
+        text_emb = self.bert.encode([prompt] * batch_size).to(
+            self.device).float()
+        text_blank = self.bert.encode([negative] * batch_size).to(
+            self.device).float()
 
         # CLIP context
         print("Encoding text with CLIP")
-        text_tokens_clip = clip.tokenize([prompt] * batch_size, truncate=True).to(
-            self.device
-        )
-        text_tokens_clip_blank = clip.tokenize(
-            [negative] * batch_size, truncate=True
-        ).to(self.device)
-
-        text_emb_clip = self.clip_model.encode_text(text_tokens_clip)
-        text_emb_clip_blank = self.clip_model.encode_text(text_tokens_clip_blank)
-
-        print(
-            f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
-        )
-        text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
-            aesthetic_rating
-        ).to(self.device)
-        text_emb_clip = average_prompt_embed_with_aesthetic_embed(
-            text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
-        )
-
-        # since we arent using a mask or editing an image, we set the image_embed to zeros
+        text_tokens = clip.tokenize([prompt] * batch_size,
+                                    truncate=True).to(self.device)
+        text_clip_blank = clip.tokenize([negative] * batch_size,
+                                        truncate=True).to(self.device)
+        text_emb_clip = self.clip_model.encode_text(text_tokens)
+        text_emb_clip_blank = self.clip_model.encode_text(text_clip_blank)
         image_embed = torch.zeros(
             batch_size * 2, 4, height // 8, width // 8, device=self.device
         )
         print("Packing CLIP and BERT embeddings into kwargs")
         kwargs = {
-            "context": torch.cat([text_emb, text_blank], dim=0).half(),
-            "clip_embed": torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).half()
-            if self.model_config["clip_embed_dim"]
-            else None,
-            "image_embed": image_embed,
+            "context":
+            torch.cat([text_emb, text_blank], dim=0).half(),
+            "clip_embed":
+            torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).half()
+            if self.model_config['clip_embed_dim'] else None,
+            "image_embed": image_embed
         }
 
         # Create a classifier-free guidance sampling function
         def model_fn(x_t, ts, **kwargs):
-            half = x_t[: len(x_t) // 2]
+            half = x_t[:len(x_t) // 2]
             combined = torch.cat([half, half], dim=0)
             model_out = self.model(combined, ts, **kwargs)
             eps, rest = model_out[:, :3], model_out[:, 3:]
@@ -280,21 +232,21 @@ class Predictor(cog.BasePredictor):
 
         if init_image:
             if init_skip_fraction == 0.0:
-                print(f"Must specify init_skip_fraction > 0.0 when using init_image.")
+                print(
+                    f"Must specify init_skip_fraction > 0.0 when using init_image."
+                )
                 print(f"Overriding init_skip_fraction to 0.5")
                 init_skip_fraction = 0.5
             print(
                 f"Loading initial image {init_image} with init_skip_fraction: {init_skip_fraction}"
             )
-            init = Image.open(init_image).convert("RGB")
+            init = Image.open(init_image).convert('RGB')
             init = init.resize((int(width), int(height)), Image.LANCZOS)
             init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
             h = self.ldm.encode(init * 2 - 1).sample() * 0.18215
             init = torch.cat(batch_size * 2 * [h], dim=0)
             # str to int * float -> float
-            init_skip_timesteps = (
-                int(self.model_config["timestep_respacing"]) * init_skip_fraction
-            )
+            init_skip_timesteps = int(self.model_config["timestep_respacing"]) * init_skip_fraction
             # float to int
             init_skip_timesteps = int(init_skip_timesteps)
         else:
@@ -303,23 +255,19 @@ class Predictor(cog.BasePredictor):
             init_skip_timesteps = 0
 
         sample_fn = self.diffusion.plms_sample_loop_progressive
-        cur_t = self.diffusion.num_timesteps - 1
         samples = sample_fn(
-            model_fn,
-            (batch_size * 2, 4, int(height / 8), int(width / 8)),
+            model_fn, (batch_size * 2, 4, int(height / 8), int(width / 8)),
             clip_denoised=False,
             model_kwargs=kwargs,
             cond_fn=None,
             device=self.device,
             progress=True,
             init_image=init,
-            skip_timesteps=init_skip_timesteps,
-        )
+            skip_timesteps=init_skip_timesteps)
 
         print("Running diffusion...")
         for j, sample in tqdm(enumerate(samples)):
-            cur_t -= 1
-            if j % 1 == 0 and j != self.diffusion.num_timesteps - 1:
+            if j % 1 == 0:
                 current_output = save_sample(sample)
                 TF.to_pil_image(current_output).save("current.png")
                 yield cog.Path("current.png")
