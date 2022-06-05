@@ -1,4 +1,4 @@
-image: "r8.im/afiaka87/ongo" # TODO
+image: "r8.im/laion-ai/ongo"
 build:
   gpu: true
 
