@@ -1,7 +1,6 @@
 import random
 import sys
-import typing
-
+from typing import List, Tuple, Iterator, Optional
 from PIL import Image
 
 from clip_custom import clip
@@ -23,6 +22,12 @@ from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
 
+class BatchedAndGridOutput(cog.BaseModel):
+    """Helper output class for returning either a batched list or a grid of that batch or both."""
+    # you mean where the return type is like Iterator[List[Path]] and you do yield [Path(...), Path(...), ...]?
+    batch: Optional[List[cog.Path]]
+    grid: Optional[cog.Path]
+
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -36,7 +41,7 @@ os.environ[
     "TOKENIZERS_PARALLELISM"] = "false"  # required to avoid errors with transformers lib
 
 
-def load_finetune(model_name="erlich.pt") -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
+def load_finetune(model_name="erlich.pt") -> Tuple[torch.nn.Module, torch.nn.Module]:
     """
     Loads the model and diffusion from an fp16 version of the model.
     """
@@ -140,6 +145,9 @@ class Predictor(cog.BasePredictor):
         batch_size: int = cog.Input(default=3,
                                     description="Batch size.",
                                     choices=[1, 2, 3, 4, 6, 8]),
+        save_batch_as_grid: bool = cog.Input(
+            default=True,
+            description="Save the batch of images as a grid. Disable if you need to save the batch as a list of individual images."),
         width: int = cog.Input(
             default=256,
             description="Target width",
@@ -164,7 +172,8 @@ class Predictor(cog.BasePredictor):
             ge=-1,
             le=(2**32 - 1),
         ),
-    ) -> typing.Iterator[cog.Path]:
+    ) -> Iterator[BatchedAndGridOutput]:
+        # you mean where the return type is like Iterator[List[Path]] and you do yield [Path(...), Path(...), ...]?
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
         torch.manual_seed(seed)
@@ -246,8 +255,7 @@ class Predictor(cog.BasePredictor):
                 im = image.unsqueeze(0)
                 out = self.ldm.decode(im)
                 final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
-            grid = make_grid(final_outputs, nrow=images_per_row)
-            return grid
+            return final_outputs
 
         if init_image:
             if init_skip_fraction == 0.0:
@@ -288,10 +296,23 @@ class Predictor(cog.BasePredictor):
         print("Running diffusion...")
         for j, sample in tqdm(enumerate(samples)):
             if j % log_interval == 0 and j != self.diffusion.num_timesteps - 1:
-                current_output = save_sample(sample)
-                TF.to_pil_image(current_output).save("current.png")
-                yield cog.Path("current.png")
-        final_output = save_sample(sample)
-        TF.to_pil_image(final_output).save("final.png")
-        yield cog.Path("final.png")
+                final_outputs = save_sample(sample)
+                if save_batch_as_grid:
+                    grid = make_grid(final_outputs, nrow=images_per_row)
+                    grid_pil = TF.to_pil_image(grid)
+                    grid_pil.save("current_grid.png")
+                    print(f"Saving grid of {grid.shape}")
+                    yield BatchedAndGridOutput(grid=grid)
+                else:
+                    print(f"Saving {len(final_outputs)} images")
+                    batch_paths = []
+                    for i, image in enumerate(final_outputs):
+                        image_pil = TF.to_pil_image(image)
+                        image_pil.save(f"{i}.png")
+                        batch_paths.append(cog.Path(f"{i}.png"))
+                    yield BatchedAndGridOutput(batch=batch_paths)
+
+        # Final output
+        if save_batch_as_grid: yield BatchedAndGridOutput(grid=grid)
+        else: yield BatchedAndGridOutput(batch=batch_paths)
         print(f"Finished generating with seed {seed}")
