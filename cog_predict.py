@@ -5,7 +5,7 @@ import typing
 from PIL import Image
 
 from clip_custom import clip
-from predict_util import average_prompt_embed_with_aesthetic_embed, load_aesthetic_vit_l_14_embed, prepare_edit
+from predict_util import average_prompt_embed_with_aesthetic_embed, load_aesthetic_vit_l_14_embed
 
 sys.path.append("latent-diffusion")
 
@@ -36,11 +36,11 @@ os.environ[
     "TOKENIZERS_PARALLELISM"] = "false"  # required to avoid errors with transformers lib
 
 
-def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
+def load_finetune(model_name="erlich.pt") -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
     """
     Loads the model and diffusion from an fp16 version of the model.
     """
-    model_state_dict = torch.load("ongo.pt", map_location="cpu")
+    model_state_dict = torch.load(model_name, map_location="cpu")
     model_config = model_and_diffusion_defaults()
     model_params = {
         'attention_resolutions': '32,16,8',
@@ -208,15 +208,9 @@ class Predictor(cog.BasePredictor):
         )
         # Image Setup
         print(f"Loading image")
+        print("Done diffusion")
         image_embed = None
-        if init_image:
-            image_embed = prepare_edit(
-                self.ldm, init_image, batch_size, width, height, self.device
-            )
-        elif self.model_config["image_condition"]:
-            print(
-                f"Using inpaint model but no image is provided. Initializing with zeros."
-            )
+        if self.model_config["image_condition"]:
             image_embed = torch.zeros(
                 batch_size * 2, 4, height // 8, width // 8, device=self.device
             )
@@ -297,5 +291,7 @@ class Predictor(cog.BasePredictor):
                 current_output = save_sample(sample)
                 TF.to_pil_image(current_output).save("current.png")
                 yield cog.Path("current.png")
-
+        final_output = save_sample(sample)
+        TF.to_pil_image(final_output).save("final.png")
+        yield cog.Path("final.png")
         print(f"Finished generating with seed {seed}")
