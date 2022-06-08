@@ -223,14 +223,7 @@ class Predictor(cog.BasePredictor):
         # Image Setup
         print(f"Loading image")
         image_embed = None
-        if init_image:
-            image_embed = prepare_edit(
-                self.ldm, init_image, batch_size, width, height, self.device
-            )
-        elif self.model_config["image_condition"]:
-            print(
-                f"Using inpaint model but no image is provided. Initializing with zeros."
-            )
+        if self.model_config["image_condition"]:
             image_embed = torch.zeros(
                 batch_size * 2, 4, height // 8, width // 8, device=self.device
             )
