@@ -35,15 +35,15 @@ source venv/bin/activate
 
 ```
 
-# latent-diffusion-finetune
+### ldm-finetune
     
 ```bash
 (venv) $ git clone https://github.com/laion-ai/ldm-finetune.git
-(venv) $ cd latent-diffusion-finetune
+(venv) $ cd ldm-finetune
 (venv) $ pip install -e .
 ```
 
-# Download model files
+## Checkpoints 
 
 ```
 # text encoder (required)
@@ -71,8 +71,7 @@ source venv/bin/activate
 
 ```
 
-# Generating images
-note: best results at 256x256 image size
+## Generating images
 
 ```
 # fast PLMS sampling
@@ -89,7 +88,7 @@ note: best results at 256x256 image size
 ```
 
 
-# Editing images
+## Editing images
 aka human guided diffusion. You can use inpainting to generate more complex prompts by progressively editing the image
 
 note: you can use > 256px but the model only sees 256x256 at a time, so ensure the inpaint area is smaller than that
@@ -116,7 +115,7 @@ pip install PyQt5
 
 ```
 
-# Training/Fine tuning
+## Training/Fine tuning
 
 ```
 # batch size > 1 required
