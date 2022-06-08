@@ -1,10 +1,12 @@
 import random
 import sys
-from typing import List, Tuple, Iterator, Optional
+from typing import Iterator, List, Optional, Tuple
+
 from PIL import Image
 
 from clip_custom import clip
-from predict_util import average_prompt_embed_with_aesthetic_embed, load_aesthetic_vit_l_14_embed
+from predict_util import (average_prompt_embed_with_aesthetic_embed,
+                          load_aesthetic_vit_l_14_embed)
 
 sys.path.append("latent-diffusion")
 
@@ -22,9 +24,10 @@ from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
 
-class BatchedAndGridOutput(cog.BaseModel):
+
+class BatchOrGrid(cog.BaseModel):
     """Helper output class for returning either a batched list or a grid of that batch or both."""
-    # you mean where the return type is like Iterator[List[Path]] and you do yield [Path(...), Path(...), ...]?
+
     batch: Optional[List[cog.Path]]
     grid: Optional[cog.Path]
 
@@ -34,11 +37,13 @@ def set_requires_grad(model, value):
         param.requires_grad = value
 
 
-normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-                                 std=[0.26862954, 0.26130258, 0.27577711])
+normalize = transforms.Normalize(
+    mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]
+)
 
 os.environ[
-    "TOKENIZERS_PARALLELISM"] = "false"  # required to avoid errors with transformers lib
+    "TOKENIZERS_PARALLELISM"
+] = "false"  # required to avoid errors with transformers lib
 
 
 def load_finetune(model_name="erlich.pt") -> Tuple[torch.nn.Module, torch.nn.Module]:
@@ -48,23 +53,27 @@ def load_finetune(model_name="erlich.pt") -> Tuple[torch.nn.Module, torch.nn.Mod
     model_state_dict = torch.load(model_name, map_location="cpu")
     model_config = model_and_diffusion_defaults()
     model_params = {
-        'attention_resolutions': '32,16,8',
-        'class_cond': False,
-        'diffusion_steps': 1000,
-        'rescale_timesteps': True,
-        'timestep_respacing': '27',
-        'image_size': 32,
-        'learn_sigma': False,
-        'noise_schedule': 'linear',
-        'num_channels': 320,
-        'num_heads': 8,
-        'num_res_blocks': 2,
-        'resblock_updown': False,
-        'use_fp16': True,
-        'use_scale_shift_norm': False,
-        'clip_embed_dim': 768 if 'clip_proj.weight' in model_state_dict else None,
-        'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
-        'super_res_condition': True if 'external_block.0.0.weight' in model_state_dict else False,
+        "attention_resolutions": "32,16,8",
+        "class_cond": False,
+        "diffusion_steps": 1000,
+        "rescale_timesteps": True,
+        "timestep_respacing": "27",
+        "image_size": 32,
+        "learn_sigma": False,
+        "noise_schedule": "linear",
+        "num_channels": 320,
+        "num_heads": 8,
+        "num_res_blocks": 2,
+        "resblock_updown": False,
+        "use_fp16": True,
+        "use_scale_shift_norm": False,
+        "clip_embed_dim": 768 if "clip_proj.weight" in model_state_dict else None,
+        "image_condition": True
+        if model_state_dict["input_blocks.0.0.weight"].shape[1] == 8
+        else False,
+        "super_res_condition": True
+        if "external_block.0.0.weight" in model_state_dict
+        else False,
     }
     model_config.update(model_params)
     model, _ = create_model_and_diffusion(**model_config)
@@ -73,7 +82,6 @@ def load_finetune(model_name="erlich.pt") -> Tuple[torch.nn.Module, torch.nn.Mod
 
 
 class Predictor(cog.BasePredictor):
-
     @torch.inference_mode(mode=True)
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
@@ -84,16 +92,14 @@ class Predictor(cog.BasePredictor):
         print("Loading diffusion model")
         self.model, self.model_config = load_finetune()
         self.model.requires_grad_(False).eval().to(self.device)
-        if self.model_config['use_fp16']:
+        if self.model_config["use_fp16"]:
             self.model.convert_to_fp16()
         else:
             self.model.convert_to_fp32()
 
         # Load CLIP text encoder from slim checkpoint
         print("Loading CLIP text encoder.")
-        self.clip_model, _ = clip.load('ViT-L/14',
-                                       device=self.device,
-                                       jit=False)
+        self.clip_model, _ = clip.load("ViT-L/14", device=self.device, jit=False)
         self.clip_model.eval().requires_grad_(False)
         self.clip_model.to(self.device)
         self.clip_preprocess = normalize
@@ -122,17 +128,15 @@ class Predictor(cog.BasePredictor):
         prompt: str = cog.Input(description="Your text prompt.", default=""),
         negative: str = cog.Input(
             default="",
-            description=
-            "(optional) Negate the model's prediction for this text from the model's prediction for the target text."
+            description="(optional) Negate the model's prediction for this text from the model's prediction for the target text.",
         ),
         init_image: cog.Path = cog.Input(
             default=None,
-            description=
-            "(optional) Initial image to use for the model's prediction."),
+            description="(optional) Initial image to use for the model's prediction.",
+        ),
         guidance_scale: float = cog.Input(
             default=5.0,
-            description=
-            "Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0. In general, going above 5.0 will introduce some artifacting.",
+            description="Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0. In general, going above 5.0 will introduce some artifacting.",
             le=100.0,
             ge=-20.0,
         ),
@@ -142,12 +146,13 @@ class Predictor(cog.BasePredictor):
             le=250,
             ge=15,
         ),
-        batch_size: int = cog.Input(default=3,
-                                    description="Batch size.",
-                                    choices=[1, 2, 3, 4, 6, 8]),
+        batch_size: int = cog.Input(
+            default=3, description="Batch size.", choices=[1, 2, 3, 4, 6, 8]
+        ),
         save_batch_as_grid: bool = cog.Input(
             default=True,
-            description="Save the batch of images as a grid. Disable if you need to save the batch as a list of individual images."),
+            description="Save the batch of images as a grid. Disable if you need to save the batch as a list of individual images.",
+        ),
         width: int = cog.Input(
             default=256,
             description="Target width",
@@ -160,20 +165,24 @@ class Predictor(cog.BasePredictor):
         ),
         init_skip_fraction: float = cog.Input(
             default=0.0,
-            description=
-            "Fraction of sampling steps to skip when using an init image. Defaults to 0.0 if init_image is not specified and 0.5 if init_image is specified.",
+            description="Fraction of sampling steps to skip when using an init image. Defaults to 0.0 if init_image is not specified and 0.5 if init_image is specified.",
             ge=0.0,
-            le=1.0),
-        aesthetic_rating: int = cog.Input(description="Aesthetic rating (1-9) - embed to use.", default=9),
-        aesthetic_weight: float = cog.Input(description="Aesthetic weight (0-1). How much to guide towards the aesthetic embed vs the prompt embed.", default=0.5),
+            le=1.0,
+        ),
+        aesthetic_rating: int = cog.Input(
+            description="Aesthetic rating (1-9) - embed to use.", default=9
+        ),
+        aesthetic_weight: float = cog.Input(
+            description="Aesthetic weight (0-1). How much to guide towards the aesthetic embed vs the prompt embed.",
+            default=0.5,
+        ),
         seed: int = cog.Input(
             default=-1,
             description="Seed for random number generator. If -1, a random seed will be chosen.",
             ge=-1,
             le=(2**32 - 1),
         ),
-    ) -> Iterator[BatchedAndGridOutput]:
-        # you mean where the return type is like Iterator[List[Path]] and you do yield [Path(...), Path(...), ...]?
+    ) -> Iterator[BatchOrGrid]:
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
         torch.manual_seed(seed)
@@ -191,20 +200,19 @@ class Predictor(cog.BasePredictor):
 
         # Bert context
         print("Encoding text with BERT")
-        text_emb = self.bert.encode([prompt] * batch_size).to(
-            self.device).float()
-        text_blank = self.bert.encode([negative] * batch_size).to(
-            self.device).float()
+        text_emb = self.bert.encode([prompt] * batch_size).to(self.device).float()
+        text_blank = self.bert.encode([negative] * batch_size).to(self.device).float()
 
         # CLIP context
         print("Encoding text with CLIP")
-        text_tokens = clip.tokenize([prompt] * batch_size,
-                                    truncate=True).to(self.device)
-        text_clip_blank = clip.tokenize([negative] * batch_size,
-                                        truncate=True).to(self.device)
+        text_tokens = clip.tokenize([prompt] * batch_size, truncate=True).to(
+            self.device
+        )
+        text_clip_blank = clip.tokenize([negative] * batch_size, truncate=True).to(
+            self.device
+        )
         text_emb_clip = self.clip_model.encode_text(text_tokens)
         text_emb_clip_blank = self.clip_model.encode_text(text_clip_blank)
-
 
         print(
             f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
@@ -225,17 +233,16 @@ class Predictor(cog.BasePredictor):
             )
         print("Packing CLIP and BERT embeddings into kwargs")
         kwargs = {
-            "context":
-            torch.cat([text_emb, text_blank], dim=0).half(),
-            "clip_embed":
-            torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).half()
-            if self.model_config['clip_embed_dim'] else None,
-            "image_embed": image_embed
+            "context": torch.cat([text_emb, text_blank], dim=0).half(),
+            "clip_embed": torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).half()
+            if self.model_config["clip_embed_dim"]
+            else None,
+            "image_embed": image_embed,
         }
 
         # Create a classifier-free guidance sampling function
         def model_fn(x_t, ts, **kwargs):
-            half = x_t[:len(x_t) // 2]
+            half = x_t[: len(x_t) // 2]
             combined = torch.cat([half, half], dim=0)
             model_out = self.model(combined, ts, **kwargs)
             eps, rest = model_out[:, :3], model_out[:, 3:]
@@ -259,21 +266,21 @@ class Predictor(cog.BasePredictor):
 
         if init_image:
             if init_skip_fraction == 0.0:
-                print(
-                    f"Must specify init_skip_fraction > 0.0 when using init_image."
-                )
+                print(f"Must specify init_skip_fraction > 0.0 when using init_image.")
                 print(f"Overriding init_skip_fraction to 0.5")
                 init_skip_fraction = 0.5
             print(
                 f"Loading initial image {init_image} with init_skip_fraction: {init_skip_fraction}"
             )
-            init = Image.open(init_image).convert('RGB')
+            init = Image.open(init_image).convert("RGB")
             init = init.resize((int(width), int(height)), Image.LANCZOS)
             init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
             h = self.ldm.encode(init * 2 - 1).sample() * 0.18215
             init = torch.cat(batch_size * 2 * [h], dim=0)
             # str to int * float -> float
-            init_skip_timesteps = int(self.model_config["timestep_respacing"]) * init_skip_fraction
+            init_skip_timesteps = (
+                int(self.model_config["timestep_respacing"]) * init_skip_fraction
+            )
             # float to int
             init_skip_timesteps = int(init_skip_timesteps)
         else:
@@ -283,16 +290,19 @@ class Predictor(cog.BasePredictor):
 
         sample_fn = self.diffusion.plms_sample_loop_progressive
         samples = sample_fn(
-            model_fn, (batch_size * 2, 4, int(height / 8), int(width / 8)),
+            model_fn,
+            (batch_size * 2, 4, int(height / 8), int(width / 8)),
             clip_denoised=False,
             model_kwargs=kwargs,
             cond_fn=None,
             device=self.device,
             progress=True,
             init_image=init,
-            skip_timesteps=init_skip_timesteps)
+            skip_timesteps=init_skip_timesteps,
+        )
 
         log_interval = 5
+        current_grid_path = cog.Path("current_grid.png")
         print("Running diffusion...")
         for j, sample in tqdm(enumerate(samples)):
             if j % log_interval == 0 and j != self.diffusion.num_timesteps - 1:
@@ -300,9 +310,9 @@ class Predictor(cog.BasePredictor):
                 if save_batch_as_grid:
                     grid = make_grid(final_outputs, nrow=images_per_row)
                     grid_pil = TF.to_pil_image(grid)
-                    grid_pil.save("current_grid.png")
+                    grid_pil.save(str(current_grid_path))
                     print(f"Saving grid of {grid.shape}")
-                    yield BatchedAndGridOutput(grid=grid)
+                    yield BatchOrGrid(grid=current_grid_path)
                 else:
                     print(f"Saving {len(final_outputs)} images")
                     batch_paths = []
@@ -310,9 +320,11 @@ class Predictor(cog.BasePredictor):
                         image_pil = TF.to_pil_image(image)
                         image_pil.save(f"{i}.png")
                         batch_paths.append(cog.Path(f"{i}.png"))
-                    yield BatchedAndGridOutput(batch=batch_paths)
+                    yield BatchOrGrid(batch=batch_paths)
 
         # Final output
-        if save_batch_as_grid: yield BatchedAndGridOutput(grid=grid)
-        else: yield BatchedAndGridOutput(batch=batch_paths)
+        if save_batch_as_grid:
+            yield BatchOrGrid(grid=current_grid_path)
+        else:
+            yield BatchOrGrid(batch=batch_paths)
         print(f"Finished generating with seed {seed}")
