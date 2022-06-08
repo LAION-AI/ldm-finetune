@@ -2,6 +2,9 @@
 
 This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).
 
+<a href="https://replicate.com/laion-ai/ongo" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=ongo&color=blue"></a> <a href="https://replicate.com/laion-ai/erlich" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=erlich&color=orange"></a> 
+
+
 Checkpoints are finetuned from `glid-3-xl` [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt)
 
 Aesthetic CLIP embeds are provided by [aesthetic-predictor](https://github.com/LAION-AI/aesthetic-predictor)
