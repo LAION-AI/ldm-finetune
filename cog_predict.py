@@ -29,7 +29,8 @@ from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
 )
 
-MODEL_NAME = "ongo.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+MODEL_NAME = "erlich.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+assert os.path.exists(MODEL_NAME), f"{MODEL_NAME} not found"
 
 
 def set_requires_grad(model, value):
