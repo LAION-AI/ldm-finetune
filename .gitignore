@@ -7,3 +7,7 @@ auto_outputs_npy/
 wandb/
 latent-diffusion/
 run_autoedit.sh.cog/
+output
+output_npy/
+dist/
+guided_diffusion.egg-info/
