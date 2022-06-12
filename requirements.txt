@@ -2,9 +2,11 @@ axial-positional-embedding==0.2.1
 albumentations>=0.4.3
 blobfile>=1.2.9
 braceexpand>=0.1.7
+clip-anytorch>=2.4.0
 Cython==0.29.30
 DALL-E==0.1
 dalle-pytorch>=1.5.2
+ftfy>=5.8
 einops>=0.4.1
 huggingface-hub>=0.5.1
 imageio>=2.9.0
