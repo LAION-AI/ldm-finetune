@@ -5,6 +5,7 @@ build:
   system_packages:
     - "libopenmpi-dev"
     - "lzma-dev"
+    - "liblzma-dev"
     - "software-properties-common"
     - "build-essential"
     - "libnss3-dev"
