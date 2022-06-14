@@ -1,4 +1,6 @@
+import typing
 from clip_custom import clip
+from guided_diffusion.respace import SpacedDiffusion
 import torch
 import numpy as np
 from pathlib import Path
@@ -12,14 +14,115 @@ from torchvision.transforms import functional as TF
 
 from clip_custom import clip
 from encoders.modules import BERTEmbedder
+from guided_diffusion import predict_util
 from guided_diffusion.script_util import (
+    create_gaussian_diffusion,
     create_model_and_diffusion,
     model_and_diffusion_defaults,
 )
 import os
 
+
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
+
+@torch.no_grad()
+@torch.inference_mode()
+def sample_diffusion_model(
+        model: torch.nn.Module = None,
+        ldm: torch.nn.Module = None,
+        diffusion_params: dict = None,
+        bert=None,
+        clip_model=None,
+        text: str = None,
+        timestep_respacing: str = "100",
+        guidance_scale=5.0,
+        negative: str = "",
+        device: str = "cuda",
+        batch_size: int = 4,
+        aesthetic_rating: int = 9,
+        aesthetic_weight: float = 0.5,
+        shape=(256, 256)
+    ) -> typing.List[torch.Tensor]:
+    diffusion = create_gaussian_diffusion(
+        steps=diffusion_params["diffusion_steps"],
+        learn_sigma=diffusion_params["learn_sigma"],
+        noise_schedule=diffusion_params["noise_schedule"],
+        use_kl=diffusion_params["use_kl"],
+        predict_xstart=diffusion_params["predict_xstart"],
+        rescale_timesteps=diffusion_params["rescale_timesteps"],
+        timestep_respacing=timestep_respacing,
+    )
+
+    height, width = shape
+    print(f"Running simulation for {text}")
+    # Create new run and table for each prompt.
+    prefix = (
+        text.replace(" ", "_").replace(",", "_").replace(".", "_").replace("'", "_")
+    )
+    prefix = prefix[:255]
+
+    # Text Setup
+    print(f"Encoding text embeddings with {text} dimensions")
+    text_emb, text_blank = predict_util.encode_bert(
+        text, negative, batch_size, device, bert
+    )
+    text_emb_clip_blank, text_emb_clip, text_emb_norm = predict_util.encode_clip(
+        clip_model=clip_model,
+        text=text,
+        negative=negative,
+        batch_size=batch_size,
+        device=device,
+    )
+    print(
+        f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
+    )
+    text_emb_clip_aesthetic = predict_util.load_aesthetic_vit_l_14_embed(
+        rating=aesthetic_rating
+    ).to(device)
+    text_emb_clip = predict_util.average_prompt_embed_with_aesthetic_embed(
+        text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
+    )
+    image_embed = torch.zeros(
+        batch_size * 2, 4, height // 8, width // 8, device=device
+    )
+
+    # Prepare inputs
+    kwargs = predict_util.pack_model_kwargs(
+        text_emb=text_emb,
+        text_blank=text_blank,
+        text_emb_clip=text_emb_clip,
+        text_emb_clip_blank=text_emb_clip_blank,
+        image_embed=image_embed,
+        model_params=diffusion_params,
+    )
+    def save_sample(sample):
+        final_outputs = []
+        for image in sample["pred_xstart"][:batch_size]:
+            image /= 0.18215
+            im = image.unsqueeze(0)
+            out = ldm.decode(im)
+            final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
+        return final_outputs
+
+    sample_fn = diffusion.plms_sample_loop_progressive
+    samples = sample_fn(
+        create_model_fn(model, guidance_scale=guidance_scale),
+        (batch_size * 2, 4, int(height / 8), int(width / 8)),
+        clip_denoised=False,
+        model_kwargs=kwargs,
+        cond_fn=None,
+        device=device,
+        progress=False,
+        init_image=None,
+        skip_timesteps=0,
+    )
+
+    print("Sampling from diffusion model...")
+    for j, sample in enumerate(samples): 
+        pass
+    return save_sample(sample)
+
 
 def load_aesthetic_vit_l_14_embed(
     rating: int = 9, embed_dir: Path = Path("aesthetic_clip_embeds")
@@ -40,7 +143,7 @@ def average_prompt_embed_with_aesthetic_embed(
     )
 
 
-def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, clip_guidance: bool, device: str):
+def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, clip_guidance: bool, use_fp16: bool, device: str):
     model_state_dict = torch.load(model_path, map_location="cpu")
 
     model_params = {
@@ -56,7 +159,7 @@ def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, cl
         "num_heads": 8,
         "num_res_blocks": 2,
         "resblock_updown": False,
-        "use_fp16": True,
+        "use_fp16": use_fp16,
         "use_scale_shift_norm": False,
         "clip_embed_dim": 768,#if "clip_proj.weight" in model_state_dict else None,
         "image_condition": True

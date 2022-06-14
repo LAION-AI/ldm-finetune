@@ -16,6 +16,7 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
     args_to_dict,
     create_model_and_diffusion,
+    diffusion_defaults,
     model_and_diffusion_defaults,
 )
 from guided_diffusion.train_util import TrainLoop
@@ -26,6 +27,7 @@ def set_requires_grad(model, value):
         param.requires_grad = value
 
 
+@torch.cuda.amp.autocast(enabled=True, dtype=torch.float32)
 def main():
     args = create_argparser().parse_args()
 
@@ -44,11 +46,11 @@ def main():
     logger.log("loading vae...")
 
     encoder = torch.load(args.kl_model, map_location="cpu")
-    encoder.half().to(dist_util.dev())
+    encoder.to(dist_util.dev())
     encoder.eval()
     set_requires_grad(encoder, False)
 
-    del encoder.decoder
+    # del encoder.decoder # TODO need this now for the sampling
     del encoder.loss
 
     logger.log("loading text encoder...")
@@ -57,13 +59,14 @@ def main():
     sd = torch.load(args.bert_model, map_location="cpu")
     bert.load_state_dict(sd)
 
-    bert.half().to(dist_util.dev())
+    bert.to(dist_util.dev())
     bert.eval()
     set_requires_grad(bert, False)
 
     logger.log("creating model and diffusion...")
+    diffusion_config = model_and_diffusion_defaults() 
     model, diffusion = create_model_and_diffusion(
-        **args_to_dict(args, model_and_diffusion_defaults().keys())
+        **args_to_dict(args, diffusion_config.keys())
     )
 
     model.to(dist_util.dev())
@@ -80,18 +83,22 @@ def main():
         clip,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
-        image_size=args.image_size,
     )
     logger.log("training...")
     TrainLoop(
         model=model,
+        bert=bert,
         diffusion=diffusion,
+        diffusion_config=diffusion_config,
+        ldm=encoder,
+        clip_model=clip_model,
         data=data,
         batch_size=args.batch_size,
         microbatch=args.microbatch,
         lr=args.lr,
         ema_rate=args.ema_rate,
         log_interval=args.log_interval,
+        sample_interval=args.sample_interval,
         save_interval=args.save_interval,
         resume_checkpoint=args.resume_checkpoint,
         use_fp16=args.use_fp16,
@@ -102,12 +109,17 @@ def main():
     ).run_loop()
 
 
-def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, image_size):
+def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size):
     data = load_data(
         data_dir=data_dir,
         batch_size=batch_size,
-        image_size=256,
-        class_cond=False,
+        random_crop=False,
+        random_flip=False,
+        image_key="jpg",
+        caption_key="txt",
+        cache_dir="cache", # TODO
+        epochs=80,
+        shard_size=128, # TODO
     )
 
     blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=(0.1, 5))
@@ -121,7 +133,7 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
             if random.randint(0, 100) < 20:
                 text[i] = ""
 
-        text_emb = bert.encode(text).to(dist_util.dev()).half()
+        text_emb = bert.encode(text).to(dist_util.dev()).float()
 
         clip_text = clip.tokenize(text, truncate=True).to(dist_util.dev())
         clip_emb = clip_model.encode_text(clip_text)
@@ -130,7 +142,7 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
         model_kwargs["clip_embed"] = clip_emb
 
         batch = batch.to(dist_util.dev())
-        emb = encoder.encode(batch.half()).sample().half()
+        emb = encoder.encode(batch.float()).sample().float()
         emb *= 0.18215
 
         emb_cond = emb.detach().clone()
@@ -181,9 +193,11 @@ def create_argparser():
         lr_anneal_steps=0,
         batch_size=1,
         microbatch=-1,  # -1 disables microbatches
-        ema_rate="0.9999",  # comma-separated list of EMA values
+        # ema_rate="0.9999",  # comma-separated list of EMA values
+        ema_rate="0.0",  # comma-separated list of EMA values
         log_interval=10,
         save_interval=10000,
+        sample_interval=1000,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
