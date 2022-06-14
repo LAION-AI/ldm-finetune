@@ -9,7 +9,7 @@ import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from guided_diffusion.respace import SpacedDiffusion
-import predict_util
+from guided_diffusion import predict_util
 
 
 def automask_transform(
@@ -229,7 +229,9 @@ def main(args):
         ddim=args.ddim,
         steps=args.steps,
         clip_guidance=args.clip_guidance,
-        device=device
+        use_fp16=args.use_fp16,
+        device=device,
+
     )
     print(f"Loading vae")
     ldm = predict_util.load_vae(kl_path=args.kl_path, device=device)
