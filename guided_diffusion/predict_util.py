@@ -29,20 +29,19 @@ BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
 @torch.no_grad()
 @torch.inference_mode()
 def sample_diffusion_model(
-        model: torch.nn.Module = None,
-        ldm: torch.nn.Module = None,
+        latent_diffusion_model: torch.nn.Module = None,
+        kl_model: torch.nn.Module = None,
         diffusion_params: dict = None,
-        bert=None,
-        clip_model=None,
+        clip_model: torch.nn.Module = None,
+        bert: torch.nn.Module = None,
         text: str = None,
+        negative: str = "",
         timestep_respacing: str = "100",
         guidance_scale=5.0,
-        negative: str = "",
         device: str = "cuda",
         batch_size: int = 4,
         aesthetic_rating: int = 9,
         aesthetic_weight: float = 0.5,
-        shape=(256, 256)
     ) -> typing.List[torch.Tensor]:
     diffusion = create_gaussian_diffusion(
         steps=diffusion_params["diffusion_steps"],
@@ -54,7 +53,7 @@ def sample_diffusion_model(
         timestep_respacing=timestep_respacing,
     )
 
-    height, width = shape
+    height, width = 256, 256 # TODO get this from the model
     print(f"Running simulation for {text}")
     # Create new run and table for each prompt.
     prefix = (
@@ -101,13 +100,13 @@ def sample_diffusion_model(
         for image in sample["pred_xstart"][:batch_size]:
             image /= 0.18215
             im = image.unsqueeze(0)
-            out = ldm.decode(im)
+            out = kl_model.decode(im)
             final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
         return final_outputs
 
     sample_fn = diffusion.plms_sample_loop_progressive
     samples = sample_fn(
-        create_model_fn(model, guidance_scale=guidance_scale),
+        create_model_fn(latent_diffusion_model, guidance_scale=guidance_scale),
         (batch_size * 2, 4, int(height / 8), int(width / 8)),
         clip_denoised=False,
         model_kwargs=kwargs,
