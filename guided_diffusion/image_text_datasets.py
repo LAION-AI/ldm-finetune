@@ -144,10 +144,11 @@ def load_webdataset(
 
     def pil_transform_to_np(arr):
         if random_crop:
-            arr = random_crop_arr(arr, resolution)
+            arr = random_crop_arr(arr, resolution, min_crop_frac=0.95) # TODO make this a param
+        else:
+            arr = center_crop_arr(arr, resolution)
         if random_flip and random.random() < 0.5:
             arr = arr[:, ::-1]
-        arr = center_crop_arr(arr, resolution)  # TODO
         arr = arr.astype(np.float32) / 127.5 - 1
         return np.transpose(arr, [2, 0, 1])
 
