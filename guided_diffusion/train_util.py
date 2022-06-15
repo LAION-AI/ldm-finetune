@@ -28,7 +28,7 @@ class TrainLoop:
         diffusion,
         diffusion_config,
         bert,
-        ldm,
+        kl_model,
         clip_model,
         data,
         batch_size,
@@ -51,7 +51,7 @@ class TrainLoop:
         self.bert = bert
         self.diffusion_config = diffusion_config
         self.diffusion = diffusion
-        self.ldm = ldm
+        self.kl_model = kl_model
         self.clip_model = clip_model
         self.data = data
         self.batch_size = batch_size
@@ -215,12 +215,19 @@ class TrainLoop:
             if self.step % self.sample_interval == 0:
                 print(f"step {self.step + self.resume_step}, running inference...")
                 samples = predict_util.sample_diffusion_model(
-                    model=self.model,
-                    ldm=self.ldm,
+                    latent_diffusion_model=self.model,
+                    kl_model=self.kl_model,
                     diffusion_params=self.diffusion_config,
-                    bert=self.bert,
                     clip_model=self.clip_model,
-                    text=""
+                    bert=self.bert,
+                    text="",
+                    negative="",
+                    timestep_respacing="150",
+                    guidance_scale=0.0,
+                    device=dist_util.dev(),
+                    batch_size=8,
+                    aesthetic_rating=9,
+                    aesthetic_weight=0.0,
                 )
                 pil_samples = [
                     TF.to_pil_image(s) for s in samples
