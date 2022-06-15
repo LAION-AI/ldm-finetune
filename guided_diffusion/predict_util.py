@@ -142,9 +142,8 @@ def average_prompt_embed_with_aesthetic_embed(
     )
 
 
-def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, clip_guidance: bool, use_fp16: bool, device: str):
+def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: str):
     model_state_dict = torch.load(model_path, map_location="cpu")
-
     model_params = {
         "attention_resolutions": "32,16,8",
         "class_cond": False,
@@ -167,17 +166,7 @@ def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, cl
         # if "external_block.0.0.weight" in model_state_dict
         # else False,
     }
-
-    if ddpm:
-        model_params["timestep_respacing"] = 1000
-    if ddim:
-        if steps:
-            model_params["timestep_respacing"] = "ddim" + str(steps)
-        else:
-            model_params["timestep_respacing"] = "ddim50"
-    elif steps:
-        model_params["timestep_respacing"] = str(steps)
-
+    model_params["timestep_respacing"] = str(steps)
     model_config = model_and_diffusion_defaults()
     model_config.update(model_params)
 
@@ -191,7 +180,7 @@ def load_diffusion_model(model_path: str, ddpm: bool, ddim: bool, steps: int, cl
         model.convert_to_fp16()
     else:
         model.convert_to_fp32()
-
+    model.to(device)
     return model, model_config, diffusion
 
 
@@ -229,6 +218,7 @@ normalize = transforms.Normalize(
 def load_clip_model(device):
     clip_model, clip_preprocess = clip.load("ViT-L/14", device=device, jit=False)
     clip_model.eval().requires_grad_(False)
+    clip_model.to(device)
     return clip_model, clip_preprocess
 
 
