@@ -1,8 +1,5 @@
+import os
 import typing
-from clip_custom import clip
-from guided_diffusion.respace import SpacedDiffusion
-import torch
-import numpy as np
 from pathlib import Path
 
 import numpy as np
@@ -15,34 +12,32 @@ from torchvision.transforms import functional as TF
 from clip_custom import clip
 from encoders.modules import BERTEmbedder
 from guided_diffusion import predict_util
-from guided_diffusion.script_util import (
-    create_gaussian_diffusion,
-    create_model_and_diffusion,
-    model_and_diffusion_defaults,
-)
-import os
-
+from guided_diffusion.respace import SpacedDiffusion
+from guided_diffusion.script_util import (create_gaussian_diffusion,
+                                          create_model_and_diffusion,
+                                          model_and_diffusion_defaults)
 
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
 
+
 @torch.no_grad()
 @torch.inference_mode()
 def sample_diffusion_model(
-        latent_diffusion_model: torch.nn.Module = None,
-        kl_model: torch.nn.Module = None,
-        diffusion_params: dict = None,
-        clip_model: torch.nn.Module = None,
-        bert: torch.nn.Module = None,
-        text: str = None,
-        negative: str = "",
-        timestep_respacing: str = "100",
-        guidance_scale=5.0,
-        device: str = "cuda",
-        batch_size: int = 4,
-        aesthetic_rating: int = 9,
-        aesthetic_weight: float = 0.5,
-    ) -> typing.List[torch.Tensor]:
+    latent_diffusion_model: torch.nn.Module = None,
+    kl_model: torch.nn.Module = None,
+    diffusion_params: dict = None,
+    clip_model: torch.nn.Module = None,
+    bert: torch.nn.Module = None,
+    text: str = None,
+    negative: str = "",
+    timestep_respacing: str = "100",
+    guidance_scale=5.0,
+    device: str = "cuda",
+    batch_size: int = 4,
+    aesthetic_rating: int = 9,
+    aesthetic_weight: float = 0.5,
+) -> typing.List[torch.Tensor]:
     diffusion = create_gaussian_diffusion(
         steps=diffusion_params["diffusion_steps"],
         learn_sigma=diffusion_params["learn_sigma"],
@@ -53,7 +48,7 @@ def sample_diffusion_model(
         timestep_respacing=timestep_respacing,
     )
 
-    height, width = 256, 256 # TODO get this from the model
+    height, width = 256, 256  # TODO get this from the model
     print(f"Running simulation for {text}")
     # Create new run and table for each prompt.
     prefix = (
@@ -82,9 +77,7 @@ def sample_diffusion_model(
     text_emb_clip = predict_util.average_prompt_embed_with_aesthetic_embed(
         text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
     )
-    image_embed = torch.zeros(
-        batch_size * 2, 4, height // 8, width // 8, device=device
-    )
+    image_embed = torch.zeros(batch_size * 2, 4, height // 8, width // 8, device=device)
 
     # Prepare inputs
     kwargs = predict_util.pack_model_kwargs(
@@ -95,6 +88,7 @@ def sample_diffusion_model(
         image_embed=image_embed,
         model_params=diffusion_params,
     )
+
     def save_sample(sample):
         final_outputs = []
         for image in sample["pred_xstart"][:batch_size]:
@@ -118,7 +112,7 @@ def sample_diffusion_model(
     )
 
     print("Sampling from diffusion model...")
-    for j, sample in enumerate(samples): 
+    for j, sample in enumerate(samples):
         pass
     return save_sample(sample)
 
@@ -159,7 +153,7 @@ def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: st
         "resblock_updown": False,
         "use_fp16": use_fp16,
         "use_scale_shift_norm": False,
-        "clip_embed_dim": 768,#if "clip_proj.weight" in model_state_dict else None,
+        "clip_embed_dim": 768,  # if "clip_proj.weight" in model_state_dict else None,
         "image_condition": True
         # if model_state_dict["input_blocks.0.0.weight"].shape[1] == 8 # else False,
         # "super_res_condition": True
@@ -190,7 +184,9 @@ def set_requires_grad(model, value):
 
 
 # vae
-def load_vae(kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda"):
+def load_vae(
+    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda"
+):
     ldm = torch.load(kl_path, map_location="cpu")
     ldm.to(device)
     ldm.eval()
@@ -274,9 +270,6 @@ def create_model_fn(model, guidance_scale):
     return model_fn
 
 
-
-
-
 def log_autoedit_sample(
     prefix: str,
     batch_index: int,
@@ -286,7 +279,9 @@ def log_autoedit_sample(
     score: torch.Tensor,
     base_dir: Path,
 ):
-    target_path = base_dir.joinpath(f"{prefix}_iter_{simulation_iter:03}_batch_{batch_index:03}_score_{score.item():.3f}.png")
+    target_path = base_dir.joinpath(
+        f"{prefix}_iter_{simulation_iter:03}_batch_{batch_index:03}_score_{score.item():.3f}.png"
+    )
 
     decoded_image_path = target_path.with_suffix(".png")
     npy_filename = target_path.with_suffix(".npy")
