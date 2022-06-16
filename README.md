@@ -149,22 +149,82 @@ note: you can use > 256px but the model only sees 256x256 at a time, so ensure t
 
 # additional arguments for uncropping
 (venv) $ python sample.py --edit_x 64 --edit_y 64 --edit_width 128 --edit_height 128 --model_path inpaint.pt --edit output_npy/00000.npy --batch_size 6 --num_batches 6 --text "your prompt"
+```
 
 ## Autoedit 
 
-# autoedit uses the inpaint model to give the ldm an image prompting function (that works differently from --init_image)
-# it continuously edits random parts of the image to maximize clip score for the text prompt
-(venv) $ python autoedit.py --edit image.png --model_path inpaint.pt --batch_size 6 --text "your prompt"
+> Autoedit uses the inpaint model to give the ldm an image prompting function (that works differently from --init_image)
+> It continuously edits random parts of the image to maximize clip score for the text prompt
 
+```bash
+CUDA_VISIBLE_DEVICES=5 python autoedit.py \
+    --model_path erlich_on_pokemon_logs_run2/model017000.pt  --kl_path kl-f8.pt --bert_path bert.pt \
+    --text "high quality professional pixel art" --negative "" --prefix autoedit_debug \
+    --batch_size 64 --width 256 --height 256 --iterations 25 \
+    --starting_threshold 0.6 --ending_threshold 0.5 \
+    --starting_radius 5 --ending_radius 0.1 \
+    --seed -1 --guidance_scale 5.0 --steps 30 \
+    --aesthetic_rating 9 --aesthetic_weight 0.5 --wandb_name autoedit_pixelart
 ```
+
 
 ## Training/Fine tuning
 
+See the script below for an example of finetuning your own model from one of the available chekcpoints. 
+
+
+Finetuning Tips/Tricks
+* NVIDIA GPU required. You will need an A100 or better to use a batch size of 64. Using less may present stability issues.
+* Monitor the `grad_norm` in the output log.  If it ever goes above 1.0 the checkpoint may be ruined due to exploding gradients. 
+    * to fix, try reducing the learning rate, decreasing the batch size.
+    * Train in 32-bit
+    * Resume with saved optimizer state when possible.
+
 ```bash
-# batch size > 1 required
-MODEL_FLAGS="--dropout 0.1 --ema_rate 0.9999 --attention_resolutions 32,16,8 --class_cond False --diffusion_steps 1000 --image_size 32 --learn_sigma False --noise_schedule linear --num_channels 320 --num_heads 8 --num_res_blocks 2 --resblock_updown False --use_fp16 True --use_scale_shift_norm False"
-TRAIN_FLAGS="--lr --batch_size 64 --microbatch 1 --log_interval 1 --save_interval 5000 --kl_model kl-f8.pt --bert_model bert.pt --resume_checkpoint diffusion.pt"
-export OPENAI_LOGDIR=./logs/
+#!/bin/bash
+# Finetune glid-3-xl inpaint.pt on your own webdataset.
+# Note: like all one-off scripts, this is likely to become out of date at some point.
+# running python scripts/image_train_inpaint.py --help will give you more info.
+
+# model flags
+use_fp16=False # TODO can cause more trouble than it's worth.
+MODEL_FLAGS="--dropout 0.1 --attention_resolutions 32,16,8 --class_cond False --diffusion_steps 1000 --image_size 32 --learn_sigma False --noise_schedule linear --num_channels 320 --num_heads 8 --num_res_blocks 2 --resblock_updown False --use_fp16 $use_fp16 --use_scale_shift_norm False"
+
+# checkpoint flags
+resume_checkpoint="inpaint.pt"
+kl_model="kl-f8.pt"
+bert_model="bert.pt"
+
+# training flags
+epochs=80
+shard_size=512
+batch_size=32
+microbatch=-1
+lr=1e-6 # lr=1e-5 seems to be stable. going above 3e-5 is not stable.
+ema_rate=0.9999 # TODO you may want to lower this to 0.999, 0.99, 0.95, etc.
+random_crop=False
+random_flip=False
+cache_dir="cache"
+image_key="jpg"
+caption_key="txt"
+data_dir=/my/custom/webdataset/ # TODO set this to a real path
+
+# interval flags
+sample_interval=100
+log_interval=1
+save_interval=2000
+
+CKPT_FLAGS="--kl_model $kl_model --bert_model $bert_model --resume_checkpoint $resume_checkpoint"
+INTERVAL_FLAGS="--sample_interval $sample_interval --log_interval $log_interval --save_interval $save_interval"
+TRAIN_FLAGS="--epochs $epochs --shard_size $shard_size --batch_size $batch_size --microbatch $microbatch --lr $lr --random_crop $random_crop --random_flip $random_flip --cache_dir $cache_dir --image_key $image_key --caption_key $caption_key --data_dir $data_dir"
+COMBINED_FLAGS="$MODEL_FLAGS $CKPT_FLAGS $TRAIN_FLAGS $INTERVAL_FLAGS"
+export OPENAI_LOGDIR=./erlich_on_pixel_logs_run6_part2/
 export TOKENIZERS_PARALLELISM=false
-python scripts/image_train_inpaint.py --data_dir /path/to/data $MODEL_FLAGS $TRAIN_FLAGS
+
+# TODO comment out a line below to train either on a single GPU or multi-GPU
+# single GPU
+# python scripts/image_train_inpaint.py $COMBINED_FLAGS
+
+# or multi-GPU
+# mpirun -n 8 python scripts/image_train_inpaint.py $COMBINED_FLAGS
 ```
