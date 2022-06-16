@@ -1,17 +1,17 @@
-from pathlib import Path
-import typing
-import wandb
 import argparse
+import datetime
 import json
+import os
+import typing
+from pathlib import Path
 
 import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
-from guided_diffusion.respace import SpacedDiffusion
-from guided_diffusion import predict_util
-import os
 
-import datetime
+import wandb
+from guided_diffusion import predict_util
+from guided_diffusion.respace import SpacedDiffusion
 
 OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
 assert not os.path.exists(
@@ -42,7 +42,7 @@ def autoedit(
 ):
     population = []
     population_scores = []
-    for mutation_index in range(num_mutations):
+    for mutation_idx in range(num_mutations):
         sample_fn = diffusion.plms_sample_loop_progressive
         model_fn = predict_util.create_model_fn(model, guidance_scale)
         samples_gn = sample_fn(
@@ -59,7 +59,8 @@ def autoedit(
         for timestep_idx, sample in enumerate(samples_gn):
             pass  # this runs the entire sample generator
 
-        for batch_idx, image in enumerate(sample["pred_xstart"][: args.batch_size]):
+        result_batch = []
+        for batch_idx, image in enumerate(sample["pred_xstart"][:batch_size]):
             # kl-f8 vqgan embedding needs to be divided by 0.18215 to get the correct range
             vae_embed = image / 0.18215
             vae_embed = vae_embed.unsqueeze(0)
@@ -80,44 +81,49 @@ def autoedit(
                 image_emb_norm, text_emb_norm, dim=-1
             )
 
-            if mutation_index == 0:
+            if mutation_idx == 0:
                 population.append(image.unsqueeze(0))
                 population_scores.append(similarity)
-                yield None  # dummy yield to run full loop.
             elif similarity > population_scores[batch_idx]:
                 population[batch_idx] = image.unsqueeze(0)
                 population_scores[batch_idx] = similarity
-                print(batch_idx, similarity.item(), "Success! saving.")
-                yield predict_util.log_autoedit_sample(
-                    prefix=prefix,
-                    batch_index=batch_idx,
-                    simulation_iter=mutation_index,
-                    vae_embed=vae_embed,
-                    decoded_image=decoded_image,
-                    score=similarity,
-                    base_dir=Path(OUTPUT_DIR),
-                )
+                print(batch_idx, similarity.item(), "Success!")
 
+            decoded_image_path, vae_image_path, npy_filename, _ = predict_util.log_autoedit_sample(
+                prefix=prefix,
+                batch_index=batch_idx,
+                simulation_iter=mutation_idx,
+                vae_embed=vae_embed,
+                decoded_image=decoded_image,
+                score=similarity,
+                base_dir=Path(OUTPUT_DIR),
+            )
+
+            result_batch.append(
+                (decoded_image_path, vae_image_path, npy_filename, similarity)
+            )
+        yield result_batch  # this returns the result batch to the caller
+
+        # begin next mutation
         image_embed = torch.cat(population + population, dim=0)
         radius = (starting_radius - ending_radius) * (
-            1 - (mutation_index / num_mutations)
+            1 - (mutation_idx / num_mutations)
         ) + ending_radius
         blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=radius)
         mask = torch.randn(batch_size, 1, height // 8, width // 8)
         mask = blur(mask)
         q = (starting_threshold - ending_threshold) * (
-            1 - (mutation_index / num_mutations)
+            1 - (mutation_idx / num_mutations)
         ) + ending_threshold
         threshold = torch.quantile(mask, q)
-        mask = (mask > threshold).float()
+        mask = (mask > threshold).float()  # TODO
         mask = mask.repeat(1, 4, 1, 1).to(device)
         mask = torch.cat([mask, mask], dim=0)
         image_embed *= mask
 
 
-@torch.inference_mode()
-@torch.no_grad()
 @torch.cuda.amp.autocast()
+@torch.no_grad()
 def main(args):
     """Main function. Runs the model."""
 
@@ -129,7 +135,13 @@ def main(args):
         eval_table_artifact = wandb.Artifact(
             args.wandb_name + "_autoedit", type="predictions"
         )
-        columns = ["mutation_index", "text", "vae_embed", "image"]
+        columns = [
+            "mutation_index",
+            "batch_idx",
+            "decoded_image_path",
+            "vae_image_path",
+            "similarity",
+        ]
         eval_table = wandb.Table(columns=columns)
     else:
         print(f"Wandb disabled. Specify --wandb_name to use wandb.")
@@ -217,7 +229,7 @@ def main(args):
             model_params=model_params,
         )
 
-        for mutation_index, mutation_paths in enumerate(
+        for mutation_idx, results in enumerate(
             autoedit(
                 model=model,
                 diffusion=diffusion,
@@ -239,24 +251,23 @@ def main(args):
                 ending_threshold=args.ending_threshold,
             )
         ):
-            if (
-                mutation_paths is not None
-            ):  # if it is, the population did worse per CLIP.
-                decoded_image_path, vae_image_path, npy_filename, score = mutation_paths
-                print(
-                    f"Saving mutation index: {mutation_index} | Score: {score} | Image: {decoded_image_path}"
-                )
+            for batch_idx, (
+                decoded_image_path,
+                vae_image_path,
+                npy_filename,
+                similarity
+            ) in enumerate(results):
                 if use_wandb:
                     eval_table.add_data(
-                        mutation_index,
-                        text,
-                        wandb.Image(str(vae_image_path)),
-                        wandb.Image(str(decoded_image_path)),
-                        score.item(),
+                        mutation_idx,
+                        batch_idx,
+                        decoded_image_path,
+                        vae_image_path,
+                        similarity,
                     )
         print(f"Finished simulation for {text}")
     if use_wandb:
-        print(f"Finished all texts. Syncing table to w&b.")
+        print("Finished all texts. Syncing table to w&b.")
         eval_table_artifact.add(eval_table, f"{prefix}_eval_table")
         wandb.run.log_artifact(eval_table_artifact)
         wandb.run.finish()
