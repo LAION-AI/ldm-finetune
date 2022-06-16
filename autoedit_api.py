@@ -1,52 +1,59 @@
 import os
+from random import randint, random
+from typing import Iterator, List, Optional
+from autoedit import autoedit
 
-from guided_diffusion.predict_util import average_prompt_embed_with_aesthetic_embed, encode_bert, encode_clip, load_aesthetic_vit_l_14_embed, pack_model_kwargs, prepare_edit
+from guided_diffusion.predict_util import (
+    average_prompt_embed_with_aesthetic_embed,
+    encode_bert,
+    encode_clip,
+    load_aesthetic_vit_l_14_embed,
+    load_bert,
+    load_clip_model,
+    load_diffusion_model,
+    load_vae,
+    pack_model_kwargs,
+    prepare_edit,
+)
 
 os.environ[
     "TOKENIZERS_PARALLELISM"
 ] = "false"  # required to avoid errors with transformers lib
 
-import typing
+
 import cog
 import torch
 
-from autoedit import (autoedit, autoedit_simulation, load_bert, load_clip_model,
-                      load_diffusion_model, load_vae, autoedit_path)
-
-model_path = "ongo.pt"
+model_path = "pokemon-final.pt"
 kl_path = "kl-f8.pt"
 bert_path = "bert.pt"
 
 
-
-class ModelOutput(cog.BaseModel):
-    mutation: int
-    score: typing.Optional[float]
-    vae_embed: typing.Optional[cog.Path]
-    image: typing.Optional[cog.Path]
-    npy_file: typing.Optional[cog.File]
-
+class AutoEditOutput(cog.BaseModel):
+    image: cog.Path
+    vae_embed: cog.Path
+    similarity: float
 
 
 class Predictor(cog.BasePredictor):
+    @torch.inference_mode()
     def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch.backends.cudnn.benchmark = True
-
-        print(f"Loading latent-diffusion model.")
+        self.device = torch.device("cuda")
+        print(f"Loading model from {model_path}")
         self.model, self.model_params, self.diffusion = load_diffusion_model(
-            model_path, False, False, 27, False, False, self.device
+            model_path=model_path,
+            steps="27",
+            use_fp16=False,
+            device=self.device,
         )
-
-        print(f"Loading VAE.")
-        self.ldm = load_vae(clip_guidance=False, kl_path=kl_path, device=self.device)
-
-        print(f"Loading CLIP.")
+        print(f"Loading vae")
+        self.ldm = load_vae(kl_path=kl_path, device=self.device)
+        self.ldm = self.ldm
+        print(f"Loading CLIP")
         self.clip_model, self.clip_preprocess = load_clip_model(self.device)
-
-        print(f"Loading BERT.")
+        print(f"Loading BERT")
         self.bert = load_bert(bert_path, self.device)
+        self.bert = self.bert
 
     @torch.inference_mode()
     def predict(
@@ -76,7 +83,7 @@ class Predictor(cog.BasePredictor):
             le=1,
         ),
         batch_size: int = cog.Input(
-            default=4, description="Batch size.", choices=[1, 2, 3, 4, 6, 8]
+            default=1, description="Batch size.", choices=[1, 2, 3, 4, 6, 8]
         ),
         width: int = cog.Input(
             default=256,
@@ -89,9 +96,9 @@ class Predictor(cog.BasePredictor):
             choices=[128, 192, 256, 320, 384],
         ),
         iterations: int = cog.Input(
-            default=1,
+            default=25,
             description="Number of iterations to run the model for.",
-            ge=1,
+            ge=25,
         ),
         starting_radius: float = cog.Input(
             default=5.0,
@@ -127,115 +134,90 @@ class Predictor(cog.BasePredictor):
             description="(optional) Seed for the random number generator.",
             ge=-1,
         ),
-    ) -> typing.List[cog.Path]:
-        device = torch.device(
-            "cuda" if (torch.cuda.is_available() and not cpu) else "cpu"
-        )
-        print("Using device:", device)
-        if seed >= 0:
+    ) -> Iterator[List[AutoEditOutput]]:
+        if seed > 0:
             torch.manual_seed(seed)
-
-        # Model Setup
-        print(f"Loading model from {model_path}")
-        model, model_params, diffusion = load_diffusion_model(
-            model_path=model_path,
-            steps=steps,
-            use_fp16=True,
-            device=device,
-
-        )
-        print(f"Loading vae")
-        ldm = load_vae(kl_path=kl_path, device=device)
-        print(f"Loading CLIP")
-        clip_model, clip_preprocess = load_clip_model(device)
-        print(f"Loading BERT")
-        bert = load_bert(bert_path, device)
-
-        if text.endswith(".json") and Path(text).exists():
-            texts = json.load(open(text))
-            print(f"Using text from {text}")
         else:
-            texts = [text]
-            print(f"Using text {text}")
+            seed = randint(0, 2**32)
+            torch.manual_seed(seed)
+            print(f"Using seed {seed}")
+        print(f"Running simulation for {text}")
+        # Create new run and table for each prompt.
+        prefix = (
+            text.replace(" ", "_").replace(",", "_").replace(".", "_").replace("'", "_")
+        )
+        prefix = prefix[:255]
 
-        for text in texts:
-            print(f"Running simulation for {text}")
-            # Create new run and table for each prompt.
-            prefix = (
-                text.replace(" ", "_").replace(",", "_").replace(".", "_").replace("'", "_")
+        # Text Setup
+        print(f"Encoding text embeddings with {text} dimensions")
+        text_emb, text_blank = encode_bert(
+            text, negative, batch_size, self.device, self.bert
+        )
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_clip(
+            clip_model=self.clip_model,
+            text=text,
+            negative=negative,
+            batch_size=batch_size,
+            device=self.device,
+        )
+        print(
+            f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
+        )
+        text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
+            rating=aesthetic_rating
+        ).to(self.device)
+        text_emb_clip = average_prompt_embed_with_aesthetic_embed(
+            text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
+        )
+        # Image Setup
+        image_embed = None
+        if edit:
+            image_embed = prepare_edit(
+                self.ldm, edit, batch_size, width, height, self.device
             )
-            prefix = prefix[:255]
-
-            # Text Setup
-            print(f"Encoding text embeddings with {text} dimensions")
-            text_emb, text_blank = encode_bert(
-                text, negative, batch_size, device, bert
-            )
-            text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_clip(
-                clip_model=clip_model,
-                text=text,
-                negative=negative,
-                batch_size=batch_size,
-                device=device,
-            )
+            print("Image embedding shape:", image_embed.shape)
+        elif self.model_params["image_condition"]:
             print(
-                f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
+                "Using inpaint model but no image is provided. Initializing with zeros."
             )
-            text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
-                rating=aesthetic_rating
-            ).to(device)
-            text_emb_clip = average_prompt_embed_with_aesthetic_embed(
-                text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
-            )
-            # Image Setup
-            print(f"Loading image")
-            image_embed = None
-            if edit:
-                image_embed = prepare_edit(
-                    ldm, edit, batch_size, width, height, device
-                )
-            elif model_params["image_condition"]:
-                print(
-                    f"Using inpaint model but no image is provided. Initializing with zeros."
-                )
-                image_embed = torch.zeros(
-                    batch_size * 2, 4, height // 8, width // 8, device=device
-                )
-
-            # Prepare inputs
-            kwargs = pack_model_kwargs(
-                text_emb=text_emb,
-                text_blank=text_blank,
-                text_emb_clip=text_emb_clip,
-                text_emb_clip_blank=text_emb_clip_blank,
-                image_embed=image_embed,
-                model_params=model_params,
+            image_embed = torch.zeros(
+                batch_size * 2, 4, height // 8, width // 8, device=self.device
             )
 
-            for mutation_index, mutation_paths in enumerate(
-                autoedit(
-                    model=model,
-                    diffusion=diffusion,
-                    ldm=ldm,
-                    text_emb_norm=text_emb_norm,
-                    clip_model=clip_model,
-                    clip_preprocess=clip_preprocess,
-                    model_kwargs=kwargs,
-                    batch_size=batch_size,
-                    prefix=prefix,
-                    device=device,
-                    guidance_scale=guidance_scale,
-                    width=width,
-                    height=height,
-                    num_mutations=iterations,
-                    starting_radius=starting_radius,
-                    ending_radius=ending_radius,
-                    starting_threshold=starting_threshold,
-                    ending_threshold=ending_threshold,
-                )
-            ):
-                if (
-                    mutation_paths is not None
-                ):  # if it is, the population did worse per CLIP.
-                    decoded_image_path, vae_image_path, npy_filename, score = mutation_paths
-                    yield ModelOutput(mutation=mutation_index, score=float(score.item()), vae_embed=vae_image_path, image=decoded_image_path, npy_file=npy_filename)
+        # Prepare inputs
+        kwargs = pack_model_kwargs(
+            text_emb=text_emb,
+            text_blank=text_blank,
+            text_emb_clip=text_emb_clip,
+            text_emb_clip_blank=text_emb_clip_blank,
+            image_embed=image_embed,
+            model_params=self.model_params,
+        )
+
+        for results in autoedit(
+            model=self.model,
+            diffusion=self.diffusion,
+            ldm=self.ldm,
+            text_emb_norm=text_emb_norm,
+            clip_model=self.clip_model,
+            clip_preprocess=self.clip_preprocess,
+            model_kwargs=kwargs,
+            batch_size=batch_size,
+            prefix=prefix,
+            device=self.device,
+            guidance_scale=guidance_scale,
+            width=width,
+            height=height,
+            num_mutations=iterations,
+            starting_radius=starting_radius,
+            ending_radius=ending_radius,
+            starting_threshold=starting_threshold,
+            ending_threshold=ending_threshold,
+        ):
+            yield [
+                AutoEditOutput(
+                    image=cog.Path(str(decoded_image_path)),
+                    vae_embed=cog.Path(str(vae_image_path)),
+                    similarity=similarity,
+                ) for decoded_image_path, vae_image_path, _, similarity in results
+            ]
