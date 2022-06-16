@@ -41,7 +41,9 @@ def main():
     logger.log("loading vae...")
 
     encoder = torch.load(args.kl_model, map_location="cpu")
-    encoder.half().to(dist_util.dev())
+    if args.use_fp16:
+        encoder = encoder.half()
+    encoder.to(dist_util.dev())
     encoder.eval()
     set_requires_grad(encoder, False)
 
@@ -54,7 +56,9 @@ def main():
     bert_state_dict = torch.load(args.bert_model, map_location="cpu")
     bert.load_state_dict(bert_state_dict)
 
-    bert.half().to(dist_util.dev())
+    if args.use_fp16:
+        bert = bert.half()
+    bert = bert.to(dist_util.dev())
     bert.eval()
     set_requires_grad(bert, False)
 
@@ -65,14 +69,13 @@ def main():
     )
 
     model.to(dist_util.dev())
-    if args.use_fp16:
-        model.convert_to_fp16()
 
     logger.log('total base parameters', sum(x.numel() for x in model.parameters()))
 
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("creating data loader...")
+
     data = load_latent_data(
         encoder=encoder,
         bert=bert,
@@ -87,7 +90,6 @@ def main():
         cache_dir=args.cache_dir,
         random_crop=args.random_crop,
         random_flip=args.random_flip,
-        use_fp16=args.use_fp16,
     )
     logger.log("training...")
     TrainLoop(
@@ -141,69 +143,70 @@ def load_latent_data(
         epochs=epochs,
         shard_size=shard_size,  # TODO
     )
-
     blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=(0.1, 5))
+    for batch, text in data:
+        batch = batch.to(dist_util.dev())
+        model_kwargs = {}
 
-    with torch.cuda.amp.autocast(enabled=use_fp16):
-        for batch, text in data:
-            batch = batch.to(dist_util.dev())
-            model_kwargs = {}
+        text = list(text)
+        for i in range(len(text)):
+            if random.randint(0, 100) < 20:
+                text[i] = ""
 
-            text = list(text)
-            for i in range(len(text)):
-                if random.randint(0, 100) < 20:
-                    text[i] = ""
+        text_emb = bert.encode(text).to(dist_util.dev())
 
-            # text_emb = bert.encode(text).to(dist_util.dev()).half() if use_fp16 else bert.encode(text)
-            text_emb = bert.encode(text).to(dist_util.dev())
+        clip_text = clip.tokenize(text, truncate=True).to(dist_util.dev())
+        clip_emb = clip_model.encode_text(clip_text)
 
-            clip_text = clip.tokenize(text, truncate=True).to(dist_util.dev())
-            clip_emb = clip_model.encode_text(clip_text)
+        model_kwargs["context"] = text_emb.float()
+        model_kwargs["clip_embed"] = clip_emb.float()
 
-            model_kwargs["context"] = text_emb
-            model_kwargs["clip_embed"] = clip_emb
+        batch = batch.to(dist_util.dev())
+        encoder_input = batch.half() if use_fp16 else batch.float()
+        emb = encoder.encode(encoder_input).sample()
+        if use_fp16:
+            emb = emb.half()
+        else:
+            emb = emb.float()
+        emb *= 0.18215
 
-            batch = batch.to(dist_util.dev())
-            emb = encoder.encode(batch.half()).sample().half()
-            emb *= 0.18215
+        emb_cond = emb.detach().clone()
 
-            emb_cond = emb.detach().clone()
-
-            for i in range(batch.shape[0]):
-                if random.randint(0, 100) < 20:
-                    emb_cond[i, :, :, :] = 0  # unconditional
+        for i in range(batch.shape[0]):
+            if random.randint(0, 100) < 20:
+                emb_cond[i, :, :, :] = 0  # unconditional
+            else:
+                if random.randint(0, 100) < 50:
+                    mask = torch.randn(1, 32, 32).to(dist_util.dev())
+                    mask = blur(mask)
+                    mask = mask > 0
+                    mask = mask.repeat(4, 1, 1)
+                    mask = mask.float()
+                    emb_cond[i] *= mask
                 else:
-                    if random.randint(0, 100) < 50:
-                        mask = torch.randn(1, 32, 32).to(dist_util.dev())
-                        mask = blur(mask)
-                        mask = mask > 0
-                        mask = mask.repeat(4, 1, 1)
-                        mask = mask.float()
-                        emb_cond[i] *= mask
-                    else:
-                        # mask out 4 random rectangles
-                        for j in range(random.randint(1, 4)):
-                            max_area = 32 * 16
-                            w = random.randint(1, 32)
-                            h = random.randint(1, 32)
-                            if w * h > max_area:
-                                if random.randint(0, 100) < 50:
-                                    w = max_area // h
-                                else:
-                                    h = max_area // w
-                            if w == 32:
-                                offsetx = 0
+                    # mask out 4 random rectangles
+                    for j in range(random.randint(1, 4)):
+                        max_area = 32 * 16
+                        w = random.randint(1, 32)
+                        h = random.randint(1, 32)
+                        if w * h > max_area:
+                            if random.randint(0, 100) < 50:
+                                w = max_area // h
                             else:
-                                offsetx = random.randint(0, 32 - w)
-                            if h == 32:
-                                offsety = 0
-                            else:
-                                offsety = random.randint(0, 32 - h)
-                            emb_cond[i, :, offsety : offsety + h, offsetx : offsetx + w] = 0
+                                h = max_area // w
+                        if w == 32:
+                            offsetx = 0
+                        else:
+                            offsetx = random.randint(0, 32 - w)
+                        if h == 32:
+                            offsety = 0
+                        else:
+                            offsety = random.randint(0, 32 - h)
+                        emb_cond[i, :, offsety : offsety + h, offsetx : offsetx + w] = 0
 
-            model_kwargs["image_embed"] = emb_cond
+        model_kwargs["image_embed"] = emb_cond.float()
 
-            yield emb, model_kwargs
+        yield emb, model_kwargs
 
 
 def create_argparser():
@@ -215,7 +218,7 @@ def create_argparser():
         lr_anneal_steps=0,
         batch_size=1,
         microbatch=-1,  # -1 disables microbatches
-        ema_rate=0.0,  # comma-separated list of EMA values
+        ema_rate="0.999",  # comma-separated list of EMA values
         log_interval=10,
         save_interval=10000,
         sample_interval=100,

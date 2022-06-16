@@ -1,4 +1,3 @@
-import numpy as np
 from pathlib import Path
 import typing
 import wandb
@@ -10,7 +9,15 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 from guided_diffusion.respace import SpacedDiffusion
 from guided_diffusion import predict_util
+import os
 
+import datetime
+
+OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
+assert not os.path.exists(
+    OUTPUT_DIR
+), f"Output directory {OUTPUT_DIR} already exists. Please renmae or delete it."
+os.makedirs(OUTPUT_DIR, exist_ok=False)
 
 
 def autoedit(
@@ -35,12 +42,9 @@ def autoedit(
 ):
     population = []
     population_scores = []
-
-    sample_fn = diffusion.plms_sample_loop_progressive
-
-    model_fn = predict_util.create_model_fn(model, guidance_scale)
-
     for mutation_index in range(num_mutations):
+        sample_fn = diffusion.plms_sample_loop_progressive
+        model_fn = predict_util.create_model_fn(model, guidance_scale)
         samples_gn = sample_fn(
             model_fn,
             (batch_size * 2, 4, int(height / 8), int(width / 8)),
@@ -52,80 +56,63 @@ def autoedit(
             init_image=None,
             skip_timesteps=0,
         )
-        vae_pil_images = []
-        decoded_pil_images = []
-        npy_paths = []
+        for timestep_idx, sample in enumerate(samples_gn):
+            pass  # this runs the entire sample generator
 
-        # This will iterate through all timesteps for current mutation/population
-        final_sample = list(samples_gn)[-1] 
-        for batch_idx, vae_embed in enumerate(
-            final_sample["pred_xstart"][:batch_size]
-        ):
-            # Create some paths
-            target_path = predict_util.autoedit_path(
-                prefix, mutation_index
-            ).joinpath(f"batch_{batch_idx:05}")
-
-            decoded_image_path = target_path.with_suffix(".png")
-            vae_image_path = target_path.with_suffix(".vae.png")
-
-            vae_as_npy_filename = target_path.with_suffix(".npy")
-            with open(vae_as_npy_filename, "wb") as outfile:
-                np.save(outfile, vae_embed.detach().cpu().numpy())
-            npy_paths.append(vae_as_npy_filename)
-
-            # Visualize the 32x32 embed
-            vae_embed = vae_embed / 0.18215
+        for batch_idx, image in enumerate(sample["pred_xstart"][: args.batch_size]):
+            # kl-f8 vqgan embedding needs to be divided by 0.18215 to get the correct range
+            vae_embed = image / 0.18215
             vae_embed = vae_embed.unsqueeze(0)
-            vae_embed_visual = (
-                vae_embed.squeeze(0).detach().clone().add(1).div(2).clamp(0, 1)
-            )
-            vae_embed_visual_pil = TF.to_pil_image(vae_embed_visual).resize(
-                (128, 128)
-            )
-            vae_embed_visual_pil.save(vae_image_path)
-            vae_pil_images.append(vae_embed_visual_pil)
 
-            # "Decode" the embed into 256x256 pixels
-            vae_decoded = ldm.decode(vae_embed)
-            decoded_image_pil = TF.to_pil_image(
-                vae_decoded.squeeze(0).add(1).div(2).clamp(0, 1)
-            )
-            decoded_image_pil.save(decoded_image_path)
-            decoded_pil_images.append(decoded_image_pil)
+            # to get the actual image from the embedding, we decode the embedding
+            decoded_image = ldm.decode(vae_embed)
 
-            # Encode (with CLIP) the current decoded 256x256 (noisy) pixels.
-            clip_image_emb = clip_model.encode_image(
-                clip_preprocess(decoded_image_pil).unsqueeze(0).to(device)
+            # The CLIP embedding is needed for image-image similarity used by autoedit
+            decoded_image_as_pil = TF.to_pil_image(
+                decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
             )
-            # using the norm lets us use cosine similarity to compare embeddings
-            image_emb_norm = clip_image_emb / clip_image_emb.norm(
-                dim=-1, keepdim=True
+            image_emb = clip_model.encode_image(
+                clip_preprocess(decoded_image_as_pil).unsqueeze(0).to(device)
             )
+            image_emb_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
+
             similarity = torch.nn.functional.cosine_similarity(
                 image_emb_norm, text_emb_norm, dim=-1
             )
-            if mutation_index == 0:  # Just started, initialize the population
-                population.append(vae_embed.unsqueeze(0))
+
+            if mutation_index == 0:
+                population.append(image.unsqueeze(0))
                 population_scores.append(similarity)
-            elif similarity > population_scores[batch_idx]:  # Replace the worst
-                population[batch_idx] = vae_embed.unsqueeze(0)
+                yield None  # dummy yield to run full loop.
+            elif similarity > population_scores[batch_idx]:
+                population[batch_idx] = image.unsqueeze(0)
                 population_scores[batch_idx] = similarity
+                print(batch_idx, similarity.item(), "Success! saving.")
+                yield predict_util.log_autoedit_sample(
+                    prefix=prefix,
+                    batch_index=batch_idx,
+                    simulation_iter=mutation_index,
+                    vae_embed=vae_embed,
+                    decoded_image=decoded_image,
+                    score=similarity,
+                    base_dir=Path(OUTPUT_DIR),
+                )
 
-        yield mutation_index, decoded_pil_images, vae_pil_images, npy_paths, population_scores
-        
-    image_embed = torch.cat(population+population, dim=0)
-
-    radius = (starting_radius-ending_radius)*(1 - (mutation_index/num_mutations)) + ending_radius
-    blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=radius)
-    mask = torch.randn(batch_size, 1, height//8, width//8)
-    mask = blur(mask)
-    q = (starting_threshold-ending_threshold)*(1 - (mutation_index/num_mutations)) + ending_threshold
-    threshold = torch.quantile(mask, q)
-    mask = (mask > threshold).float()
-    mask = mask.repeat(1, 4, 1, 1).to(device)
-    mask = torch.cat([mask,mask], dim=0)
-    image_embed *= mask
+        image_embed = torch.cat(population + population, dim=0)
+        radius = (starting_radius - ending_radius) * (
+            1 - (mutation_index / num_mutations)
+        ) + ending_radius
+        blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=radius)
+        mask = torch.randn(batch_size, 1, height // 8, width // 8)
+        mask = blur(mask)
+        q = (starting_threshold - ending_threshold) * (
+            1 - (mutation_index / num_mutations)
+        ) + ending_threshold
+        threshold = torch.quantile(mask, q)
+        mask = (mask > threshold).float()
+        mask = mask.repeat(1, 4, 1, 1).to(device)
+        mask = torch.cat([mask, mask], dim=0)
+        image_embed *= mask
 
 
 @torch.inference_mode()
@@ -139,6 +126,11 @@ def main(args):
     if use_wandb:
         wandb.init(project=args.wandb_name, config=args)
         wandb.config.update(args)
+        eval_table_artifact = wandb.Artifact(
+            args.wandb_name + "_autoedit", type="predictions"
+        )
+        columns = ["mutation_index", "text", "vae_embed", "image"]
+        eval_table = wandb.Table(columns=columns)
     else:
         print(f"Wandb disabled. Specify --wandb_name to use wandb.")
 
@@ -156,7 +148,6 @@ def main(args):
         steps=args.steps,
         use_fp16=True,
         device=device,
-
     )
     print(f"Loading vae")
     ldm = predict_util.load_vae(kl_path=args.kl_path, device=device)
@@ -171,18 +162,6 @@ def main(args):
     else:
         texts = [args.text]
         print(f"Using text {args.text}")
-
-    if use_wandb:
-        eval_table_artifact = wandb.Artifact(
-            "glid-3-xl-table" + str(wandb.run.id), type="predictions"
-        )
-        columns = [
-            "mutation_index",
-            "decoded_images",
-            "vae_images",
-            "population_scores",
-        ]
-        eval_table = wandb.Table(columns=columns)
 
     for text in texts:
         print(f"Running simulation for {text}")
@@ -238,47 +217,49 @@ def main(args):
             model_params=model_params,
         )
 
-        # yield mutation_index, decoded_pil_images, vae_pil_images, npy_paths
-        for mutation_index, decoded_pil_images, vae_pil_images, npy_paths, population_scores in autoedit(
-            model=model,
-            diffusion=diffusion,
-            ldm=ldm,
-            text_emb_norm=text_emb_norm,
-            clip_model=clip_model,
-            clip_preprocess=clip_preprocess,
-            model_kwargs=kwargs,
-            batch_size=args.batch_size,
-            prefix=prefix,
-            device=device,
-            guidance_scale=args.guidance_scale,
-            width=args.width,
-            height=args.height,
-            num_mutations=args.iterations,
-            starting_radius=args.starting_radius,
-            ending_radius=args.ending_radius,
-            starting_threshold=args.starting_threshold,
-            ending_threshold=args.ending_threshold,
+        for mutation_index, mutation_paths in enumerate(
+            autoedit(
+                model=model,
+                diffusion=diffusion,
+                ldm=ldm,
+                text_emb_norm=text_emb_norm,
+                clip_model=clip_model,
+                clip_preprocess=clip_preprocess,
+                model_kwargs=kwargs,
+                batch_size=args.batch_size,
+                prefix=prefix,
+                device=device,
+                guidance_scale=args.guidance_scale,
+                width=args.width,
+                height=args.height,
+                num_mutations=args.iterations,
+                starting_radius=args.starting_radius,
+                ending_radius=args.ending_radius,
+                starting_threshold=args.starting_threshold,
+                ending_threshold=args.ending_threshold,
+            )
         ):
-            if use_wandb:
-                columns = [
-                    "mutation_index",
-                    "decoded_images",
-                    "vae_images",
-                    "population_scores",
-                ]
-                eval_table.add_data(
-                    mutation_index,
-                    [wandb.Image(img, caption=str(idx)) for idx, img in enumerate(decoded_pil_images)],
-                    [wandb.Image(img, caption=str(idx)) for idx, img in enumerate(vae_pil_images)],
-                    population_scores,
-
+            if (
+                mutation_paths is not None
+            ):  # if it is, the population did worse per CLIP.
+                decoded_image_path, vae_image_path, npy_filename, score = mutation_paths
+                print(
+                    f"Saving mutation index: {mutation_index} | Score: {score} | Image: {decoded_image_path}"
                 )
-        if use_wandb:
-            print(f"Generation finished. Syncing table to w&b.")
-            eval_table_artifact.add(eval_table, f"{prefix}_eval_table")
-            wandb.run.log_artifact(eval_table_artifact)
-            wandb.run.finish()
+                if use_wandb:
+                    eval_table.add_data(
+                        mutation_index,
+                        text,
+                        wandb.Image(str(vae_image_path)),
+                        wandb.Image(str(decoded_image_path)),
+                        score.item(),
+                    )
         print(f"Finished simulation for {text}")
+    if use_wandb:
+        print(f"Finished all texts. Syncing table to w&b.")
+        eval_table_artifact.add(eval_table, f"{prefix}_eval_table")
+        wandb.run.log_artifact(eval_table_artifact)
+        wandb.run.finish()
 
 
 def parse_args():
@@ -346,35 +327,35 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=10,
+        default=25,
         required=False,
         help="number of mutation steps",
     )
     parser.add_argument(
         "--starting_threshold",
         type=float,
-        default=0.9,
+        default=0.6,
         required=False,
         help="how much of the image to replace at the start of editing (1 = inpaint the entire image)",
     )
     parser.add_argument(
         "--ending_threshold",
         type=float,
-        default=0.8,
+        default=0.5,
         required=False,
         help="how much of the image to replace at the end of editing",
     )
     parser.add_argument(
         "--starting_radius",
         type=float,
-        default=3,
+        default=5,
         required=False,
         help="size of noise blur at the start of editing (larger = coarser changes)",
     )
     parser.add_argument(
         "--ending_radius",
         type=float,
-        default=1.0,
+        default=0.1,
         required=False,
         help="size of noise blur at the end of editing (smaller = editing fine details)",
     )

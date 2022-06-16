@@ -274,10 +274,7 @@ def create_model_fn(model, guidance_scale):
     return model_fn
 
 
-def autoedit_path(prefix, simulation_iter):
-    target_dir = BASE_DIR.joinpath(f"prefix_{prefix}", f"simulation_{simulation_iter}")
-    target_dir.mkdir(parents=True, exist_ok=True)
-    return target_dir
+
 
 
 def log_autoedit_sample(
@@ -287,11 +284,9 @@ def log_autoedit_sample(
     vae_embed: torch.Tensor,
     decoded_image: torch.Tensor,
     score: torch.Tensor,
-    target_dir: Path,
+    base_dir: Path,
 ):
-    target_path = autoedit_path(prefix, simulation_iter).joinpath(
-        f"batch_{batch_index:05}"
-    )
+    target_path = base_dir.joinpath(f"{prefix}_iter_{simulation_iter:03}_batch_{batch_index:03}_score_{score.item():.3f}.png")
 
     decoded_image_path = target_path.with_suffix(".png")
     npy_filename = target_path.with_suffix(".npy")
@@ -309,7 +304,7 @@ def log_autoedit_sample(
         decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
     )
     decoded_image_pil.save(decoded_image_path)
-    return decoded_image_path, vae_image_path, npy_filename
+    return decoded_image_path, vae_image_path, npy_filename, score
 
 
 def pack_model_kwargs(
