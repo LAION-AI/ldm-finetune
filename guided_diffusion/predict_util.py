@@ -243,7 +243,7 @@ def encode_bert(text, negative, batch_size, device, bert=None):
 
 
 # clip context
-def encode_clip(clip_model, text, negative, batch_size, device):
+def encode_cfg_text(clip_model, text, negative, batch_size, device):
     text_tokens = clip.tokenize([text] * batch_size, truncate=True)
     text_tokens = text_tokens.detach().cpu().numpy().astype(np.int64)
 
