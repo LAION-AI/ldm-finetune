@@ -1,23 +1,15 @@
 import sys
-sys.path.append("CLIP-ONNX")
-from clip_onnx import clip_onnx
-import os
-from random import randint, random
-from typing import Iterator, List, Optional
-from autoedit import autoedit
 
+sys.path.append("CLIP-ONNX")
+import os
+from random import randint
+from typing import Iterator, List
+
+from autoedit import autoedit
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed,
-    encode_bert,
-    encode_clip,
-    load_aesthetic_vit_l_14_embed,
-    load_bert,
-    load_clip_model,
-    load_diffusion_model,
-    load_vae,
-    pack_model_kwargs,
-    prepare_edit,
-)
+    average_prompt_embed_with_aesthetic_embed, encode_bert, encode_cfg_text,
+    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
+    load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
 
 os.environ[
     "TOKENIZERS_PARALLELISM"
@@ -155,7 +147,7 @@ class Predictor(cog.BasePredictor):
         text_emb, text_blank = encode_bert(
             text, negative, batch_size, self.device, self.bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_clip(
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_cfg_text(
             clip_model=self.clip_model,
             text=text,
             negative=negative,
