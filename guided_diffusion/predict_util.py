@@ -1,10 +1,10 @@
+import sys
 import os
 import typing
 from pathlib import Path
 
 import numpy as np
 import torch
-from clip_onnx import clip_onnx
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
@@ -18,6 +18,8 @@ from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
 
+sys.path.append("CLIP-ONNX")
+from clip_onnx import clip_onnx
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
 
