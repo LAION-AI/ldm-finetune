@@ -14,3 +14,4 @@ guided_diffusion.egg-info/
 textual.onnx
 visual.onnx
 *.sh
+.cog/
