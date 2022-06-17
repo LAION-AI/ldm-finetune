@@ -11,3 +11,6 @@ output
 output_npy/
 dist/
 guided_diffusion.egg-info/
+textual.onnx
+visual.onnx
+*.sh
