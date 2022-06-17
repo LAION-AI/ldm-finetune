@@ -1,5 +1,3 @@
-from clip_onnx import clip_onnx
-from torchvision.transforms import Compose, Resize, ToTensor, InterpolationMode, CenterCrop, Normalize
 import os
 import typing
 from pathlib import Path
@@ -10,11 +8,12 @@ from clip_onnx import clip_onnx
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
+from torchvision.transforms import (CenterCrop, Compose, InterpolationMode,
+                                    Normalize, Resize, ToTensor)
 from torchvision.transforms import functional as TF
 
 from clip_custom import clip
 from encoders.modules import BERTEmbedder
-from guided_diffusion import predict_util
 from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
@@ -40,6 +39,9 @@ def sample_diffusion_model(
     aesthetic_rating: int = 9,
     aesthetic_weight: float = 0.5,
 ) -> typing.List[torch.Tensor]:
+    """
+    Sample a diffusion model.
+    """
     diffusion = create_gaussian_diffusion(
         steps=diffusion_params["diffusion_steps"],
         learn_sigma=diffusion_params["learn_sigma"],
@@ -60,12 +62,10 @@ def sample_diffusion_model(
 
     # Text Setup
     print(f"Encoding text embeddings with {text} dimensions")
-    text_emb, text_blank = predict_util.encode_bert(
-        text, negative, batch_size, device, bert
-    )
-    text_emb_clip_blank, text_emb_clip, text_emb_norm = predict_util.encode_clip(
+    text_emb, text_blank = bert_encode_cfg(text, negative, batch_size, device, bert)
+    text_emb_clip_blank, text_emb_clip, _ = clip_encode_cfg(
         clip_model=clip_model,
-        text_tokens=text,
+        text=text,
         negative=negative,
         batch_size=batch_size,
         device=device,
@@ -73,16 +73,16 @@ def sample_diffusion_model(
     print(
         f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
     )
-    text_emb_clip_aesthetic = predict_util.load_aesthetic_vit_l_14_embed(
-        rating=aesthetic_rating
-    ).to(device)
-    text_emb_clip = predict_util.average_prompt_embed_with_aesthetic_embed(
+    text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(rating=aesthetic_rating).to(
+        device
+    )
+    text_emb_clip = average_prompt_embed_with_aesthetic_embed(
         text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
     )
     image_embed = torch.zeros(batch_size * 2, 4, height // 8, width // 8, device=device)
 
     # Prepare inputs
-    kwargs = predict_util.pack_model_kwargs(
+    kwargs = pack_model_kwargs(
         text_emb=text_emb,
         text_blank=text_blank,
         text_emb_clip=text_emb_clip,
@@ -102,7 +102,7 @@ def sample_diffusion_model(
 
     sample_fn = diffusion.plms_sample_loop_progressive
     samples = sample_fn(
-        create_model_fn(latent_diffusion_model, guidance_scale=guidance_scale),
+        create_cfg_fn(latent_diffusion_model, guidance_scale=guidance_scale),
         (batch_size * 2, 4, int(height / 8), int(width / 8)),
         clip_denoised=False,
         model_kwargs=kwargs,
@@ -114,14 +114,16 @@ def sample_diffusion_model(
     )
 
     print("Sampling from diffusion model...")
-    for j, sample in enumerate(samples):
-        pass
-    return save_sample(sample)
+    final_sample = list(samples)[-1]
+    return save_sample(final_sample)
 
 
 def load_aesthetic_vit_l_14_embed(
     rating: int = 9, embed_dir: Path = Path("aesthetic_clip_embeds")
 ) -> torch.Tensor:
+    """
+    Load the aesthetic CLIP embedding for the given rating.
+    """
     assert rating in range(1, 10), "rating must be in [1, 2, 3, 4, 5, 6, 7, 8, 9]"
     embed_path = embed_dir.joinpath(f"rating{rating}.npy")
     text_emb_clip_aesthetic = np.load(embed_path)
@@ -133,12 +135,18 @@ def average_prompt_embed_with_aesthetic_embed(
     aesthetic_embed: torch.Tensor,
     aesthetic_weight: float = 0.5,
 ) -> torch.Tensor:
+    """
+    Average and normalize the prompt embedding with the aesthetic embedding you pass in.
+    """
     return F.normalize(
         prompt_embed * (1 - aesthetic_weight) + aesthetic_embed * aesthetic_weight
     )
 
 
 def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: str):
+    """
+    Load a diffusion model from a checkpoint.
+    """
     model_state_dict = torch.load(model_path, map_location="cpu")
     model_params = {
         "attention_resolutions": "32,16,8",
@@ -181,6 +189,9 @@ def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: st
 
 
 def set_requires_grad(model, value):
+    """
+    Set the requires_grad flag of all parameters in the model.
+    """
     for param in model.parameters():
         param.requires_grad = value
 
@@ -189,6 +200,9 @@ def set_requires_grad(model, value):
 def load_vae(
     kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda"
 ):
+    """
+    Load kl-f8 stage 1 VAE from a checkpoint.
+    """
     ldm = torch.load(kl_path, map_location="cpu")
     ldm.to(device)
     ldm.eval()
@@ -199,18 +213,16 @@ def load_vae(
 
 # bert-text
 def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda"):
+    """
+    Load BERT from a checkpoint.
+    """
     bert = BERTEmbedder(1280, 32)
     sd = torch.load(bert_path, map_location="cpu")
     bert.load_state_dict(sd)
     bert.to(device)
-    bert.half().eval()
+    bert.half().eval()  # TODO
     set_requires_grad(bert, False)
     return bert
-
-
-normalize = transforms.Normalize(
-    mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]
-)
 
 
 def _convert_image_to_rgb(image):
@@ -218,16 +230,25 @@ def _convert_image_to_rgb(image):
 
 
 def _transform(n_px):
-    return Compose([
-        Resize(n_px, interpolation=InterpolationMode.BICUBIC),
-        CenterCrop(n_px),
-        _convert_image_to_rgb,
-        ToTensor(),
-        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-    ])
+    return Compose(
+        [
+            Resize(n_px, interpolation=InterpolationMode.BICUBIC),
+            CenterCrop(n_px),
+            _convert_image_to_rgb,
+            ToTensor(),
+            Normalize(
+                (0.48145466, 0.4578275, 0.40821073),
+                (0.26862954, 0.26130258, 0.27577711),
+            ),
+        ]
+    )
+
 
 # clip
 def load_clip_model(device, visual_path="visual.onnx", textual_path="textual.onnx"):
+    """
+    Loads an ONNX-runtime compatible checkpoint for CLIP.
+    """
     onnx_model = clip_onnx(None)
     onnx_model.load_onnx(visual_path, textual_path, logit_scale=100.0000)
     provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
@@ -236,28 +257,39 @@ def load_clip_model(device, visual_path="visual.onnx", textual_path="textual.onn
 
 
 # bert context
-def encode_bert(text, negative, batch_size, device, bert=None):
+def bert_encode_cfg(text, negative, batch_size, device, bert=None):
+    """
+    Returns the BERT classifier-free guidance context for a batch of text.
+    """
     text_emb = bert.encode([text] * batch_size).to(device).float()
     text_blank = bert.encode([negative] * batch_size).to(device).float()
     return text_emb, text_blank
 
 
 # clip context
-def encode_cfg_text(clip_model, text, negative, batch_size, device):
+def clip_encode_cfg(clip_model, text, negative, batch_size, device):
+    """
+    Returns the CLIP classifier-free guidance context for a batch of text.
+    """
     text_tokens = clip.tokenize([text] * batch_size, truncate=True)
     text_tokens = text_tokens.detach().cpu().numpy().astype(np.int64)
 
     negative_tokens = clip.tokenize([negative] * batch_size, truncate=True)
     negative_tokens = negative_tokens.detach().cpu().numpy().astype(np.int64)
 
-    text_emb_clip = torch.tensor(clip_model.encode_text(text_tokens)).to(device)
-    text_emb_clip_blank = torch.tensor(clip_model.encode_text(negative_tokens)).to(device)
+    text_emb_clip = torch.Tensor(clip_model.encode_text(text_tokens)).to(device)
+    text_emb_clip_blank = torch.Tensor(clip_model.encode_text(negative_tokens)).to(
+        device
+    )
 
     text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)
     return text_emb_clip_blank, text_emb_clip, text_emb_norm
 
 
 def prepare_edit(ldm, edit, batch_size, width, height, device):
+    """
+    Given an `edit` image path, embed it and return the embedding. `edit` may be an image or a `.npy` file.
+    """
     if edit.endswith(".npy"):
         with open(edit, "rb") as f:
             input_image = np.load(f)
@@ -278,7 +310,11 @@ def prepare_edit(ldm, edit, batch_size, width, height, device):
     return image_embed
 
 
-def create_model_fn(model, guidance_scale):
+def create_cfg_fn(model, guidance_scale):
+    """
+    Create a classifier-free guidance function for a model with the given guidance scale.
+    """
+
     def model_fn(x_t, ts, **kwargs):
         half = x_t[: len(x_t) // 2]
         combined = torch.cat([half, half], dim=0)
@@ -301,6 +337,9 @@ def log_autoedit_sample(
     score: torch.Tensor,
     base_dir: Path,
 ):
+    """
+    Logs an autoedit sample to a file.
+    """
     target_path = base_dir.joinpath(
         f"{prefix}_iter_{simulation_iter:03}_batch_{batch_index:03}_score_{score.item():.3f}.png"
     )
@@ -332,6 +371,9 @@ def pack_model_kwargs(
     image_embed: torch.Tensor = None,
     model_params: dict = None,
 ):
+    """
+    Pack model kwargs for a latent diffusion inpaint model.
+    """
     return {
         "context": torch.cat([text_emb, text_blank], dim=0).float(),
         "clip_embed": torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).float()
@@ -365,15 +407,20 @@ class MakeCutouts(torch.nn.Module):
         return torch.cat(cutouts)
 
 
-def spherical_dist_loss(x, y):
-    x = F.normalize(x, dim=-1)
-    y = F.normalize(y, dim=-1)
-    return (x - y).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
+def spherical_dist_loss(
+    first_vector: torch.Tensor, second_vector: torch.Tensor
+) -> torch.Tensor:
+    """
+    Compute the spherical distance loss between two vectors.
+    """
+    first_vector = F.normalize(first_vector, dim=-1)
+    second_vector = F.normalize(second_vector, dim=-1)
+    return (first_vector - second_vector).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
 
 
-def tv_loss(input):
+def tv_loss(batch: torch.Tensor) -> torch.Tensor:
     """L2 total variation loss, as in Mahendran et al."""
-    input = F.pad(input, (0, 1, 0, 1), "replicate")
-    x_diff = input[..., :-1, 1:] - input[..., :-1, :-1]
-    y_diff = input[..., 1:, :-1] - input[..., :-1, :-1]
+    batch = F.pad(batch, (0, 1, 0, 1), "replicate")
+    x_diff = batch[..., :-1, 1:] - batch[..., :-1, :-1]
+    y_diff = batch[..., 1:, :-1] - batch[..., :-1, :-1]
     return (x_diff**2 + y_diff**2).mean([1, 2, 3])
