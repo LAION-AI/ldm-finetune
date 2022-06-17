@@ -144,7 +144,7 @@ def main(args):
         ]
         eval_table = wandb.Table(columns=columns)
     else:
-        print(f"Wandb disabled. Specify --wandb_name to use wandb.")
+        print("Wandb disabled. Specify --wandb_name to use wandb.")
 
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
@@ -261,8 +261,8 @@ def main(args):
                     eval_table.add_data(
                         mutation_idx,
                         batch_idx,
-                        decoded_image_path,
-                        vae_image_path,
+                        wandb.Image(str(decoded_image_path)),
+                        wandb.Image(str(vae_image_path)),
                         similarity,
                     )
         print(f"Finished simulation for {text}")
@@ -395,7 +395,6 @@ if __name__ == "__main__":
     try:
         main(args)
     except KeyboardInterrupt as kb_interrupt:
-        print(f"Keyboard Interrupt. Finishing run.")
-
-    if args.wandb_name is not None:
-        wandb.run.finish()
+        print("Keyboard Interrupt. Finishing run.")
+        if args.wandb_name is not None:
+            wandb.run.finish()
