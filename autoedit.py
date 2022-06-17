@@ -8,11 +8,15 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
-import wandb
-from guided_diffusion import predict_util
+from guided_diffusion.predict_util import (
+    average_prompt_embed_with_aesthetic_embed, create_model_fn, encode_bert, encode_cfg_text,
+    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
+    load_diffusion_model, load_vae, log_autoedit_sample, pack_model_kwargs,
+    prepare_edit)
 from guided_diffusion.respace import SpacedDiffusion
 
 OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
@@ -70,7 +74,7 @@ def autoedit(
     population_scores = []
     for mutation_idx in range(num_mutations):
         sample_fn = diffusion.plms_sample_loop_progressive
-        model_fn = predict_util.create_model_fn(model, guidance_scale)
+        model_fn = create_model_fn(model, guidance_scale)
         samples_gn = sample_fn(
             model_fn,
             (batch_size * 2, 4, int(height / 8), int(width / 8)),
@@ -101,7 +105,7 @@ def autoedit(
                 print(batch_idx, similarity.item(), "Success!")
                 scored_changed = True
 
-            decoded_image_path, vae_image_path, npy_filename, _ = predict_util.log_autoedit_sample(
+            decoded_image_path, vae_image_path, npy_filename, _ = log_autoedit_sample(
                 prefix=prefix,
                 batch_index=batch_idx,
                 simulation_iter=mutation_idx,
@@ -171,21 +175,21 @@ def main(args):
 
     # Model Setup
     print(f"Loading model from {args.model_path}")
-    model, model_params, diffusion = predict_util.load_diffusion_model(
+    model, model_params, diffusion = load_diffusion_model(
         model_path=args.model_path,
         steps=args.steps,
         use_fp16=True,
         device=device,
     )
     print(f"Loading vae")
-    ldm = predict_util.load_vae(kl_path=args.kl_path, device=device)
+    ldm = load_vae(kl_path=args.kl_path, device=device)
     print(f"Loading CLIP")
-    clip_model, clip_preprocess = predict_util.load_clip_model(device)
+    clip_model, clip_preprocess = load_clip_model(device)
     print(f"Loading BERT")
-    bert = predict_util.load_bert(args.bert_path, device)
+    bert = load_bert(args.bert_path, device)
 
     if args.text.endswith(".json") and Path(args.text).exists():
-        texts = json.load(open(args.text))
+        texts = json.load(open(args.text, "r", encoding="utf-8"))
         print(f"Using text from {args.text}")
     else:
         texts = [args.text]
@@ -201,10 +205,10 @@ def main(args):
 
         # Text Setup
         print(f"Encoding text embeddings with {text} dimensions")
-        text_emb, text_blank = predict_util.encode_bert(
+        text_emb, text_blank = encode_bert(
             text, args.negative, args.batch_size, device, bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = predict_util.encode_clip(
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_cfg_text(
             clip_model=clip_model,
             text=text,
             negative=args.negative,
@@ -214,17 +218,17 @@ def main(args):
         print(
             f"Using aesthetic embedding {args.aesthetic_rating} with weight {args.aesthetic_weight}"
         )
-        text_emb_clip_aesthetic = predict_util.load_aesthetic_vit_l_14_embed(
+        text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
             rating=args.aesthetic_rating
         ).to(device)
-        text_emb_clip = predict_util.average_prompt_embed_with_aesthetic_embed(
+        text_emb_clip = average_prompt_embed_with_aesthetic_embed(
             text_emb_clip, text_emb_clip_aesthetic, args.aesthetic_weight
         )
         # Image Setup
         print("Loading image")
         image_embed = None
         if args.edit:
-            image_embed = predict_util.prepare_edit(
+            image_embed = prepare_edit(
                 ldm, args.edit, args.batch_size, args.width, args.height, device
             )
         elif model_params["image_condition"]:
@@ -236,7 +240,7 @@ def main(args):
             )
 
         # Prepare inputs
-        kwargs = predict_util.pack_model_kwargs(
+        kwargs = pack_model_kwargs(
             text_emb=text_emb,
             text_blank=text_blank,
             text_emb_clip=text_emb_clip,
