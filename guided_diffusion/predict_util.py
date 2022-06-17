@@ -1,9 +1,12 @@
+from clip_onnx import clip_onnx
+from torchvision.transforms import Compose, Resize, ToTensor, InterpolationMode, CenterCrop, Normalize
 import os
 import typing
 from pathlib import Path
 
 import numpy as np
 import torch
+from clip_onnx import clip_onnx
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
@@ -12,7 +15,6 @@ from torchvision.transforms import functional as TF
 from clip_custom import clip
 from encoders.modules import BERTEmbedder
 from guided_diffusion import predict_util
-from guided_diffusion.respace import SpacedDiffusion
 from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
@@ -63,7 +65,7 @@ def sample_diffusion_model(
     )
     text_emb_clip_blank, text_emb_clip, text_emb_norm = predict_util.encode_clip(
         clip_model=clip_model,
-        text=text,
+        text_tokens=text,
         negative=negative,
         batch_size=batch_size,
         device=device,
@@ -210,12 +212,27 @@ normalize = transforms.Normalize(
     mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711]
 )
 
+
+def _convert_image_to_rgb(image):
+    return image.convert("RGB")
+
+
+def _transform(n_px):
+    return Compose([
+        Resize(n_px, interpolation=InterpolationMode.BICUBIC),
+        CenterCrop(n_px),
+        _convert_image_to_rgb,
+        ToTensor(),
+        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+    ])
+
 # clip
-def load_clip_model(device):
-    clip_model, clip_preprocess = clip.load("ViT-L/14", device=device, jit=False)
-    clip_model.eval().requires_grad_(False)
-    clip_model.to(device)
-    return clip_model, clip_preprocess
+def load_clip_model(device, visual_path="visual.onnx", textual_path="textual.onnx"):
+    onnx_model = clip_onnx(None)
+    onnx_model.load_onnx(visual_path, textual_path, logit_scale=100.0000)
+    provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
+    onnx_model.start_sessions(providers=[provider])
+    return onnx_model, _transform(224)
 
 
 # bert context
@@ -227,10 +244,15 @@ def encode_bert(text, negative, batch_size, device, bert=None):
 
 # clip context
 def encode_clip(clip_model, text, negative, batch_size, device):
-    text = clip.tokenize([text] * batch_size, truncate=True).to(device)
-    text_clip_blank = clip.tokenize([negative] * batch_size, truncate=True).to(device)
-    text_emb_clip = clip_model.encode_text(text)
-    text_emb_clip_blank = clip_model.encode_text(text_clip_blank)
+    text_tokens = clip.tokenize([text] * batch_size, truncate=True)
+    text_tokens = text_tokens.detach().cpu().numpy().astype(np.int64)
+
+    negative_tokens = clip.tokenize([negative] * batch_size, truncate=True)
+    negative_tokens = negative_tokens.detach().cpu().numpy().astype(np.int64)
+
+    text_emb_clip = torch.tensor(clip_model.encode_text(text_tokens)).to(device)
+    text_emb_clip_blank = torch.tensor(clip_model.encode_text(negative_tokens)).to(device)
+
     text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)
     return text_emb_clip_blank, text_emb_clip, text_emb_norm
 

@@ -1,3 +1,6 @@
+import sys
+sys.path.append("CLIP-ONNX")
+from clip_onnx import clip_onnx
 import os
 from random import randint, random
 from typing import Iterator, List, Optional
@@ -31,7 +34,6 @@ bert_path = "bert.pt"
 
 class AutoEditOutput(cog.BaseModel):
     image: cog.Path
-    vae_embed: cog.Path
     similarity: float
 
 
@@ -214,10 +216,8 @@ class Predictor(cog.BasePredictor):
             starting_threshold=starting_threshold,
             ending_threshold=ending_threshold,
         ):
-            yield [
-                AutoEditOutput(
-                    image=cog.Path(str(decoded_image_path)),
-                    vae_embed=cog.Path(str(vae_image_path)),
-                    similarity=similarity,
-                ) for decoded_image_path, vae_image_path, _, similarity in results
-            ]
+            outputs = []
+            for result in results:
+                decoded_image_path, _, _, similarity = result
+                outputs.append(AutoEditOutput(image=cog.Path(str(decoded_image_path)), similarity=similarity))
+            yield outputs

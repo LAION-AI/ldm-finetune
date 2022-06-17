@@ -3,8 +3,10 @@ import datetime
 import json
 import os
 import typing
+from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
@@ -40,6 +42,30 @@ def autoedit(
     starting_threshold: float = 0.5,
     ending_threshold: float = 0.1,
 ):
+    @lru_cache(maxsize=None)
+    def init_vae_sample(vae_embed_image):
+        vae_embed = vae_embed_image / 0.18215
+        return vae_embed.unsqueeze(0)
+
+    @lru_cache(maxsize=None)
+    def decode_vae_sample(embed):
+        return ldm.decode(embed)
+
+    @lru_cache(maxsize=None)
+    def clip_similarity(clip_image_embed, text_emb_norm):
+        # The CLIP embedding is needed for image-image similarity used by autoedit
+        decoded_image_as_pil = TF.to_pil_image(
+            decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
+        )
+        clip_input = clip_preprocess(decoded_image_as_pil).unsqueeze(0).to(device)
+        clip_input = clip_input.detach().cpu().numpy().astype(np.float32)
+        clip_image_embed = torch.Tensor(clip_model.encode_image(clip_input)).to(device)
+        image_emb_norm = clip_image_embed / clip_image_embed.norm(dim=-1, keepdim=True)
+        return torch.nn.functional.cosine_similarity(
+            image_emb_norm, text_emb_norm, dim=-1
+        )
+
+
     population = []
     population_scores = []
     for mutation_idx in range(num_mutations):
@@ -52,7 +78,7 @@ def autoedit(
             model_kwargs=model_kwargs,
             cond_fn=None,
             device=device,
-            progress=True,
+            progress=False,
             init_image=None,
             skip_timesteps=0,
         )
@@ -60,40 +86,26 @@ def autoedit(
             pass  # this runs the entire sample generator
 
         result_batch = []
-        for batch_idx, image in enumerate(sample["pred_xstart"][:batch_size]):
+        scored_changed = False
+        for batch_idx, current_vae_tensor in enumerate(sample["pred_xstart"][:batch_size]):
             # kl-f8 vqgan embedding needs to be divided by 0.18215 to get the correct range
-            vae_embed = image / 0.18215
-            vae_embed = vae_embed.unsqueeze(0)
-
-            # to get the actual image from the embedding, we decode the embedding
-            decoded_image = ldm.decode(vae_embed)
-
-            # The CLIP embedding is needed for image-image similarity used by autoedit
-            decoded_image_as_pil = TF.to_pil_image(
-                decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
-            )
-            image_emb = clip_model.encode_image(
-                clip_preprocess(decoded_image_as_pil).unsqueeze(0).to(device)
-            )
-            image_emb_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
-
-            similarity = torch.nn.functional.cosine_similarity(
-                image_emb_norm, text_emb_norm, dim=-1
-            )
-
+            normalized_vae_image_embed = init_vae_sample(current_vae_tensor)
+            decoded_image = decode_vae_sample(normalized_vae_image_embed)
+            similarity = clip_similarity(normalized_vae_image_embed, text_emb_norm)
             if mutation_idx == 0:
-                population.append(image.unsqueeze(0))
+                population.append(current_vae_tensor.unsqueeze(0))
                 population_scores.append(similarity)
             elif similarity > population_scores[batch_idx]:
-                population[batch_idx] = image.unsqueeze(0)
+                population[batch_idx] = current_vae_tensor.unsqueeze(0)
                 population_scores[batch_idx] = similarity
                 print(batch_idx, similarity.item(), "Success!")
+                scored_changed = True
 
             decoded_image_path, vae_image_path, npy_filename, _ = predict_util.log_autoedit_sample(
                 prefix=prefix,
                 batch_index=batch_idx,
                 simulation_iter=mutation_idx,
-                vae_embed=vae_embed,
+                vae_embed=normalized_vae_image_embed,
                 decoded_image=decoded_image,
                 score=similarity,
                 base_dir=Path(OUTPUT_DIR),
@@ -102,7 +114,11 @@ def autoedit(
             result_batch.append(
                 (decoded_image_path, vae_image_path, npy_filename, similarity)
             )
-        yield result_batch  # this returns the result batch to the caller
+        if scored_changed:
+            print("Successfully improved sample/s this batch. Yielding output.")
+            yield result_batch  # this returns the result batch to the caller
+        else:
+            print("No improvement this batch. Starting next iteration.")
 
         # begin next mutation
         image_embed = torch.cat(population + population, dim=0)
@@ -205,7 +221,7 @@ def main(args):
             text_emb_clip, text_emb_clip_aesthetic, args.aesthetic_weight
         )
         # Image Setup
-        print(f"Loading image")
+        print("Loading image")
         image_embed = None
         if args.edit:
             image_embed = predict_util.prepare_edit(
@@ -213,7 +229,7 @@ def main(args):
             )
         elif model_params["image_condition"]:
             print(
-                f"Using inpaint model but no image is provided. Initializing with zeros."
+                "Using inpaint model but no image is provided. Initializing with zeros."
             )
             image_embed = torch.zeros(
                 args.batch_size * 2, 4, args.height // 8, args.width // 8, device=device
