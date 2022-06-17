@@ -13,7 +13,7 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, create_model_fn, encode_bert, encode_cfg_text,
+    average_prompt_embed_with_aesthetic_embed, create_cfg_fn, bert_encode_cfg, clip_encode_cfg,
     load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
     load_diffusion_model, load_vae, log_autoedit_sample, pack_model_kwargs,
     prepare_edit)
@@ -74,7 +74,7 @@ def autoedit(
     population_scores = []
     for mutation_idx in range(num_mutations):
         sample_fn = diffusion.plms_sample_loop_progressive
-        model_fn = create_model_fn(model, guidance_scale)
+        model_fn = create_cfg_fn(model, guidance_scale)
         samples_gn = sample_fn(
             model_fn,
             (batch_size * 2, 4, int(height / 8), int(width / 8)),
@@ -205,10 +205,10 @@ def main(args):
 
         # Text Setup
         print(f"Encoding text embeddings with {text} dimensions")
-        text_emb, text_blank = encode_bert(
+        text_emb, text_blank = bert_encode_cfg(
             text, args.negative, args.batch_size, device, bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_cfg_text(
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg(
             clip_model=clip_model,
             text=text,
             negative=args.negative,
