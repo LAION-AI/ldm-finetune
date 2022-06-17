@@ -1,13 +1,13 @@
-import sys
-
-sys.path.append("CLIP-ONNX")
 import os
 from random import randint
 from typing import Iterator, List
 
+import cog
+import torch
+
 from autoedit import autoedit
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, encode_bert, encode_cfg_text,
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg,
     load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
     load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
 
@@ -15,13 +15,9 @@ os.environ[
     "TOKENIZERS_PARALLELISM"
 ] = "false"  # required to avoid errors with transformers lib
 
-
-import cog
-import torch
-
-model_path = "pokemon-final.pt"
-kl_path = "kl-f8.pt"
-bert_path = "bert.pt"
+MODEL_PATH = "pokemon-final.pt"
+KL_PATH = "kl-f8.pt"
+BERT_PATH = "bert.pt"
 
 
 class AutoEditOutput(cog.BaseModel):
@@ -33,20 +29,20 @@ class Predictor(cog.BasePredictor):
     @torch.inference_mode()
     def setup(self):
         self.device = torch.device("cuda")
-        print(f"Loading model from {model_path}")
+        print(f"Loading model from {MODEL_PATH}")
         self.model, self.model_params, self.diffusion = load_diffusion_model(
-            model_path=model_path,
+            model_path=MODEL_PATH,
             steps="27",
             use_fp16=False,
             device=self.device,
         )
         print(f"Loading vae")
-        self.ldm = load_vae(kl_path=kl_path, device=self.device)
+        self.ldm = load_vae(kl_path=KL_PATH, device=self.device)
         self.ldm = self.ldm
         print(f"Loading CLIP")
         self.clip_model, self.clip_preprocess = load_clip_model(self.device)
         print(f"Loading BERT")
-        self.bert = load_bert(bert_path, self.device)
+        self.bert = load_bert(BERT_PATH, self.device)
         self.bert = self.bert
 
     @torch.inference_mode()
@@ -128,7 +124,7 @@ class Predictor(cog.BasePredictor):
             description="(optional) Seed for the random number generator.",
             ge=-1,
         ),
-    ) -> Iterator[List[AutoEditOutput]]:
+    ) -> Iterator[List[cog.Path]]:
         if seed > 0:
             torch.manual_seed(seed)
         else:
@@ -144,10 +140,10 @@ class Predictor(cog.BasePredictor):
 
         # Text Setup
         print(f"Encoding text embeddings with {text} dimensions")
-        text_emb, text_blank = encode_bert(
+        text_emb, text_blank = bert_encode_cfg(
             text, negative, batch_size, self.device, self.bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = encode_cfg_text(
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg(
             clip_model=self.clip_model,
             text=text,
             negative=negative,
@@ -211,5 +207,6 @@ class Predictor(cog.BasePredictor):
             outputs = []
             for result in results:
                 decoded_image_path, _, _, similarity = result
-                outputs.append(AutoEditOutput(image=cog.Path(str(decoded_image_path)), similarity=similarity))
+                # outputs.append(AutoEditOutput(image=cog.Path(str(decoded_image_path)), similarity=similarity))
+                outputs.append(cog.Path(str(decoded_image_path)))
             yield outputs
