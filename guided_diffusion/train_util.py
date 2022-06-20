@@ -3,11 +3,12 @@ import functools
 import os
 
 import blobfile as bf
+from guided_diffusion import predict_util
 import torch as th
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
-
+from torchvision.transforms import functional as TF
 from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
@@ -25,6 +26,10 @@ class TrainLoop:
         *,
         model,
         diffusion,
+        diffusion_config,
+        bert,
+        kl_model,
+        clip_model,
         data,
         batch_size,
         microbatch,
@@ -32,6 +37,7 @@ class TrainLoop:
         ema_rate,
         log_interval,
         save_interval,
+        sample_interval,
         resume_checkpoint,
         use_fp16=False,
         fp16_scale_growth=1e-3,
@@ -40,8 +46,13 @@ class TrainLoop:
         lr_anneal_steps=0,
         lr_warmup_steps=0,
     ):
+        self.log_dir = os.environ["OPENAI_LOGDIR"]
         self.model = model
+        self.bert = bert
+        self.diffusion_config = diffusion_config
         self.diffusion = diffusion
+        self.kl_model = kl_model
+        self.clip_model = clip_model
         self.data = data
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
@@ -53,6 +64,7 @@ class TrainLoop:
         )
         self.log_interval = log_interval
         self.save_interval = save_interval
+        self.sample_interval = sample_interval
         self.resume_checkpoint = resume_checkpoint
         self.use_fp16 = use_fp16
         self.fp16_scale_growth = fp16_scale_growth
@@ -199,11 +211,37 @@ class TrainLoop:
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-            if self.step % self.save_interval == 0:
-                self.save()
-                # Run for a finite amount of time in integration tests.
-                if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                    return
+
+            if self.step % self.sample_interval == 0:
+                print(f"step {self.step + self.resume_step}, running inference...")
+                samples = predict_util.sample_diffusion_model(
+                    latent_diffusion_model=self.model,
+                    kl_model=self.kl_model,
+                    diffusion_params=self.diffusion_config,
+                    clip_model=self.clip_model,
+                    bert=self.bert,
+                    text="",
+                    negative="",
+                    timestep_respacing="150",
+                    guidance_scale=0.0,
+                    device=dist_util.dev(),
+                    batch_size=8,
+                    aesthetic_rating=9,
+                    aesthetic_weight=0.0,
+                )
+                pil_samples = [
+                    TF.to_pil_image(s) for s in samples
+                ]
+                for idx, pil_sample in enumerate(pil_samples):
+                    pil_sample.save(
+                        f"{self.log_dir}/sample_{self.step}_{idx}.png"
+                    )
+                    print(f"saved sample {idx} to {self.log_dir}/sample_{self.step}_{idx}.png")
+                if self.step % self.save_interval == 0:
+                    self.save()
+                    # Run for a finite amount of time in integration tests.
+                    if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                        return
             self.step += 1
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:

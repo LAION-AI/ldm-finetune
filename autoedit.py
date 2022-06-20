@@ -1,46 +1,29 @@
-import numpy as np
-from pathlib import Path
-import typing
-import wandb
 import argparse
+import datetime
 import json
+import os
+import typing
+from functools import lru_cache
+from pathlib import Path
 
+import numpy as np
 import torch
+import wandb
 from torchvision import transforms
 from torchvision.transforms import functional as TF
+
+from guided_diffusion.predict_util import (
+    average_prompt_embed_with_aesthetic_embed, create_cfg_fn, bert_encode_cfg, clip_encode_cfg,
+    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
+    load_diffusion_model, load_vae, log_autoedit_sample, pack_model_kwargs,
+    prepare_edit)
 from guided_diffusion.respace import SpacedDiffusion
-import predict_util
 
-
-def automask_transform(
-    num_mutations: int,
-    population: torch.Tensor,
-    batch_size: int,
-    mutation_index: int,
-    starting_radius: float,
-    ending_radius: float,
-    starting_threshold: float,
-    ending_threshold: float,
-    width: int,
-    height: int,
-    device: str,
-):
-    image_embed = torch.cat(population + population, dim=0)
-    radius = (starting_radius - ending_radius) * (
-        1 - (mutation_index / num_mutations)
-    ) + ending_radius
-    blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=radius)
-    mask = torch.randn(batch_size, 1, height // 8, width // 8)
-    mask = blur(mask)
-    q = (starting_threshold - ending_threshold) * (
-        1 - (mutation_index / num_mutations)
-    ) + ending_threshold
-    threshold = torch.quantile(mask, q)
-    mask = (mask > threshold).float()
-    mask = mask.repeat(1, 4, 1, 1).to(device)
-    mask = torch.cat([mask, mask], dim=0)
-    image_embed *= mask
-    return image_embed
+OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
+assert not os.path.exists(
+    OUTPUT_DIR
+), f"Output directory {OUTPUT_DIR} already exists. Please renmae or delete it."
+os.makedirs(OUTPUT_DIR, exist_ok=False)
 
 
 def autoedit(
@@ -54,10 +37,7 @@ def autoedit(
     batch_size: int,
     prefix: str = None,
     device: str = None,
-    ddpm: bool = False,  # TODO
-    ddim: bool = False,
     guidance_scale: float = None,  # TODO
-    clip_guidance_scale: float = 150,
     width: int = 256,
     height: int = 256,
     num_mutations: int = 30,
@@ -65,144 +45,105 @@ def autoedit(
     ending_radius: float = 0.1,
     starting_threshold: float = 0.5,
     ending_threshold: float = 0.1,
-    log_interval: int = 1,
 ):
+    @lru_cache(maxsize=None)
+    def init_vae_sample(vae_embed_image):
+        vae_embed = vae_embed_image / 0.18215
+        return vae_embed.unsqueeze(0)
+
+    @lru_cache(maxsize=None)
+    def decode_vae_sample(embed):
+        return ldm.decode(embed)
+
+    @lru_cache(maxsize=None)
+    def clip_similarity(clip_image_embed, text_emb_norm):
+        # The CLIP embedding is needed for image-image similarity used by autoedit
+        decoded_image_as_pil = TF.to_pil_image(
+            decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
+        )
+        clip_input = clip_preprocess(decoded_image_as_pil).unsqueeze(0).to(device)
+        clip_input = clip_input.detach().cpu().numpy().astype(np.float32)
+        clip_image_embed = torch.Tensor(clip_model.encode_image(clip_input)).to(device)
+        image_emb_norm = clip_image_embed / clip_image_embed.norm(dim=-1, keepdim=True)
+        return torch.nn.functional.cosine_similarity(
+            image_emb_norm, text_emb_norm, dim=-1
+        )
+
+
     population = []
     population_scores = []
-    if ddpm:
-        sample_fn = diffusion.ddpm_sample_loop_progressive
-    elif ddim:
-        sample_fn = diffusion.ddim_sample_loop_progressive
-    else:
+    for mutation_idx in range(num_mutations):
         sample_fn = diffusion.plms_sample_loop_progressive
-
-    model_fn = predict_util.create_model_fn(model, guidance_scale)
-    make_cutouts = predict_util.MakeCutouts(clip_model.visual.input_resolution, args.cutn)
-
-    cur_t = None
-
-    def cond_fn(x, t, context=None, clip_embed=None, image_embed=None):
-        with torch.enable_grad():
-            x = x[: batch_size].detach().requires_grad_()
-            n = x.shape[0]
-            my_t = torch.ones([n], device=device, dtype=torch.long) * cur_t
-            kw = {
-                "context": context[: batch_size],
-                "clip_embed": clip_embed[: batch_size] if model_kwargs["clip_embed_dim"] else None,
-                "image_embed": image_embed[: batch_size] if image_embed is not None else None,
-            }
-            out = diffusion.p_mean_variance(
-                model, x, my_t, clip_denoised=False, **model_kwargs
-            )
-            fac = diffusion.sqrt_one_minus_alphas_cumprod[cur_t]
-            x_in = out["pred_xstart"] * fac + x * (1 - fac)
-            x_in /= 0.18215
-            x_img = ldm.decode(x_in)
-            clip_in = predict_util.normalize(make_cutouts(x_img.add(1).div(2)))
-            clip_embeds = clip_model.encode_image(clip_in).float()
-            dists = predict_util.spherical_dist_loss(
-                clip_embeds.unsqueeze(1), text_emb_clip.unsqueeze(0)
-            )
-            dists = dists.view([cutn, n, -1])
-            losses = dists.sum(2).mean(0)
-            loss = losses.sum() * clip_guidance_scale
-            return -torch.autograd.grad(loss, x)[0]
-
-    for mutation_index in range(num_mutations):
-        cur_t = diffusion.num_timesteps - 1
-        samples = sample_fn(
+        model_fn = create_cfg_fn(model, guidance_scale)
+        samples_gn = sample_fn(
             model_fn,
             (batch_size * 2, 4, int(height / 8), int(width / 8)),
             clip_denoised=False,
             model_kwargs=model_kwargs,
             cond_fn=None,
             device=device,
-            progress=True,
+            progress=False,
             init_image=None,
             skip_timesteps=0,
         )
-        for j, sample in enumerate(samples):
-            cur_t -= 1
-            if j % log_interval == 0 and j != diffusion.num_timesteps - 1:
-                vae_image_paths = []
-                decoded_image_paths = []
-                npy_paths = []
+        for timestep_idx, sample in enumerate(samples_gn):
+            pass  # this runs the entire sample generator
 
-                for batch_idx, vae_embed in enumerate(
-                    sample["pred_xstart"][:batch_size]
-                ):
-                    # Create some paths
-                    target_path = predict_util.autoedit_path(
-                        prefix, mutation_index
-                    ).joinpath(f"batch_{batch_idx:05}")
+        result_batch = []
+        scored_changed = False
+        for batch_idx, current_vae_tensor in enumerate(sample["pred_xstart"][:batch_size]):
+            # kl-f8 vqgan embedding needs to be divided by 0.18215 to get the correct range
+            normalized_vae_image_embed = init_vae_sample(current_vae_tensor)
+            decoded_image = decode_vae_sample(normalized_vae_image_embed)
+            similarity = clip_similarity(normalized_vae_image_embed, text_emb_norm)
+            if mutation_idx == 0:
+                population.append(current_vae_tensor.unsqueeze(0))
+                population_scores.append(similarity)
+            elif similarity > population_scores[batch_idx]:
+                population[batch_idx] = current_vae_tensor.unsqueeze(0)
+                population_scores[batch_idx] = similarity
+                print(batch_idx, similarity.item(), "Success!")
+                scored_changed = True
 
-                    decoded_image_path = target_path.with_suffix(".png")
-                    vae_image_path = target_path.with_suffix(".vae.png")
+            decoded_image_path, vae_image_path, npy_filename, _ = log_autoedit_sample(
+                prefix=prefix,
+                batch_index=batch_idx,
+                simulation_iter=mutation_idx,
+                vae_embed=normalized_vae_image_embed,
+                decoded_image=decoded_image,
+                score=similarity,
+                base_dir=Path(OUTPUT_DIR),
+            )
 
-                    vae_as_npy_filename = target_path.with_suffix(".npy")
-                    with open(vae_as_npy_filename, "wb") as outfile:
-                        np.save(outfile, vae_embed.detach().cpu().numpy())
-                    npy_paths.append(vae_as_npy_filename)
+            result_batch.append(
+                (decoded_image_path, vae_image_path, npy_filename, similarity)
+            )
+        if scored_changed:
+            print("Successfully improved sample/s this batch. Yielding output.")
+            yield result_batch  # this returns the result batch to the caller
+        else:
+            print("No improvement this batch. Starting next iteration.")
 
-                    # Visualize the 32x32 embed
-                    vae_embed = vae_embed / 0.18215
-                    vae_embed = vae_embed.unsqueeze(0)
-                    vae_embed_visual = (
-                        vae_embed.squeeze(0).detach().clone().add(1).div(2).clamp(0, 1)
-                    )
-                    vae_embed_visual_pil = TF.to_pil_image(vae_embed_visual).resize(
-                        (128, 128)
-                    )
-                    vae_embed_visual_pil.save(vae_image_path)
-                    vae_image_paths.append(vae_image_path)
-
-                    # "Decode" the embed into 256x256 pixels
-                    vae_decoded = ldm.decode(vae_decoded)
-                    decoded_image_pil = TF.to_pil_image(
-                        vae_decoded.squeeze(0).add(1).div(2).clamp(0, 1)
-                    )
-                    decoded_image_pil.save(decoded_image_path)
-                    decoded_image_paths.append(decoded_image_path)
-
-                    # Encode (with CLIP) the current decoded 256x256 (noisy) pixels.
-                    clip_image_emb = clip_model.encode_image(
-                        clip_preprocess(decoded_image_pil).unsqueeze(0).to(device)
-                    )
-                    # using the norm lets us use cosine similarity to compare embeddings
-                    image_emb_norm = clip_image_emb / clip_image_emb.norm(
-                        dim=-1, keepdim=True
-                    )
-                    similarity = torch.nn.functional.cosine_similarity(
-                        image_emb_norm, text_emb_norm, dim=-1
-                    )
-                    if mutation_index == 0:  # Just started, initialize the population
-                        population.append(vae_embed.unsqueeze(0))
-                        population_scores.append(similarity)
-                    elif similarity > population_scores[batch_idx]:  # Replace the worst
-                        population[batch_idx] = vae_embed.unsqueeze(0)
-                        population_scores[batch_idx] = similarity
-                        print(batch_idx, similarity.item())
-                    else:
-                        print(f"{batch_idx} {similarity.item()} - not replacing")
-                yield mutation_index, decoded_image_paths, vae_image_paths, npy_paths
-                model_kwargs["image_embed"] = automask_transform(
-                    num_mutations=num_mutations,
-                    population=population,
-                    batch_size=batch_size,
-                    mutation_index=mutation_index,
-                    starting_radius=starting_radius,
-                    ending_radius=ending_radius,
-                    starting_threshold=starting_threshold,
-                    ending_threshold=ending_threshold,
-                    width=width,
-                    height=height,
-                    device=device,
-                )
+        # begin next mutation
+        image_embed = torch.cat(population + population, dim=0)
+        radius = (starting_radius - ending_radius) * (
+            1 - (mutation_idx / num_mutations)
+        ) + ending_radius
+        blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=radius)
+        mask = torch.randn(batch_size, 1, height // 8, width // 8)
+        mask = blur(mask)
+        q = (starting_threshold - ending_threshold) * (
+            1 - (mutation_idx / num_mutations)
+        ) + ending_threshold
+        threshold = torch.quantile(mask, q)
+        mask = (mask > threshold).float()  # TODO
+        mask = mask.repeat(1, 4, 1, 1).to(device)
+        mask = torch.cat([mask, mask], dim=0)
+        image_embed *= mask
 
 
-@torch.inference_mode()
-@torch.no_grad()
 @torch.cuda.amp.autocast()
+@torch.no_grad()
 def main(args):
     """Main function. Runs the model."""
 
@@ -211,8 +152,19 @@ def main(args):
     if use_wandb:
         wandb.init(project=args.wandb_name, config=args)
         wandb.config.update(args)
+        eval_table_artifact = wandb.Artifact(
+            args.wandb_name + "_autoedit", type="predictions"
+        )
+        columns = [
+            "mutation_index",
+            "batch_idx",
+            "decoded_image_path",
+            "vae_image_path",
+            "similarity",
+        ]
+        eval_table = wandb.Table(columns=columns)
     else:
-        print(f"Wandb disabled. Specify --wandb_name to use wandb.")
+        print("Wandb disabled. Specify --wandb_name to use wandb.")
 
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
@@ -223,41 +175,25 @@ def main(args):
 
     # Model Setup
     print(f"Loading model from {args.model_path}")
-    model, model_params, diffusion = predict_util.load_diffusion_model(
+    model, model_params, diffusion = load_diffusion_model(
         model_path=args.model_path,
-        ddpm=args.ddpm,
-        ddim=args.ddim,
         steps=args.steps,
-        clip_guidance=args.clip_guidance,
-        device=device
+        use_fp16=True,
+        device=device,
     )
     print(f"Loading vae")
-    ldm = predict_util.load_vae(kl_path=args.kl_path, device=device)
+    ldm = load_vae(kl_path=args.kl_path, device=device)
     print(f"Loading CLIP")
-    clip_model, clip_preprocess = predict_util.load_clip_model(device)
+    clip_model, clip_preprocess = load_clip_model(device)
     print(f"Loading BERT")
-    bert = predict_util.load_bert(args.bert_path, device)
+    bert = load_bert(args.bert_path, device)
 
     if args.text.endswith(".json") and Path(args.text).exists():
-        texts = json.load(open(args.text))
+        texts = json.load(open(args.text, "r", encoding="utf-8"))
         print(f"Using text from {args.text}")
     else:
         texts = [args.text]
         print(f"Using text {args.text}")
-
-    if use_wandb:
-        eval_table_artifact = wandb.Artifact(
-            "glid-3-xl-table" + str(wandb.run.id), type="predictions"
-        )
-        columns = [
-            "latents",
-            "decoded",
-            "scores",
-            "aesthetic_rating",
-            "aesthetic_weight",
-            "simulation_iter",
-        ]
-        eval_table = wandb.Table(columns=columns)
 
     for text in texts:
         print(f"Running simulation for {text}")
@@ -269,10 +205,10 @@ def main(args):
 
         # Text Setup
         print(f"Encoding text embeddings with {text} dimensions")
-        text_emb, text_blank = predict_util.encode_bert(
+        text_emb, text_blank = bert_encode_cfg(
             text, args.negative, args.batch_size, device, bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = predict_util.encode_clip(
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg(
             clip_model=clip_model,
             text=text,
             negative=args.negative,
@@ -282,29 +218,29 @@ def main(args):
         print(
             f"Using aesthetic embedding {args.aesthetic_rating} with weight {args.aesthetic_weight}"
         )
-        text_emb_clip_aesthetic = predict_util.load_aesthetic_vit_l_14_embed(
+        text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
             rating=args.aesthetic_rating
         ).to(device)
-        text_emb_clip = predict_util.average_prompt_embed_with_aesthetic_embed(
+        text_emb_clip = average_prompt_embed_with_aesthetic_embed(
             text_emb_clip, text_emb_clip_aesthetic, args.aesthetic_weight
         )
         # Image Setup
-        print(f"Loading image")
+        print("Loading image")
         image_embed = None
         if args.edit:
-            image_embed = predict_util.prepare_edit(
+            image_embed = prepare_edit(
                 ldm, args.edit, args.batch_size, args.width, args.height, device
             )
         elif model_params["image_condition"]:
             print(
-                f"Using inpaint model but no image is provided. Initializing with zeros."
+                "Using inpaint model but no image is provided. Initializing with zeros."
             )
             image_embed = torch.zeros(
                 args.batch_size * 2, 4, args.height // 8, args.width // 8, device=device
             )
 
         # Prepare inputs
-        kwargs = predict_util.pack_model_kwargs(
+        kwargs = pack_model_kwargs(
             text_emb=text_emb,
             text_blank=text_blank,
             text_emb_clip=text_emb_clip,
@@ -313,45 +249,48 @@ def main(args):
             model_params=model_params,
         )
 
-        for mutation_index, decoded_image_paths, vae_image_paths, npy_paths in autoedit(
-            model=model,
-            diffusion=diffusion,
-            ldm=ldm,
-            text_emb_norm=text_emb_norm,
-            clip_model=clip_model,
-            clip_preprocess=clip_preprocess,
-            image_embed=image_embed,
-            model_kwargs=kwargs,
-            batch_size=args.batch_size,
-            prefix=prefix,
-            device=device,
-            ddpm=args.ddpm,
-            ddim=args.ddim,
-            guidance_scale=args.guidance_scale,
-            width=args.width,
-            height=args.height,
-            num_mutations=args.iterations,
-            starting_radius=args.starting_radius,
-            ending_radius=args.ending_radius,
-            starting_threshold=args.starting_threshold,
-            ending_threshold=args.ending_threshold,
-            log_interval=args.log_interval,
-        ):
-            if use_wandb:
-                eval_table.add_data(
-                    [wandb.Image(decoded_image_path) for decoded_image_path in decoded_image_paths],
-                    [wandb.Image(vae_image_path) for vae_image_path in vae_image_paths],
-                    mutation_index,
-                )
-            print(
-                f"Finished mutation index {mutation_index} of {args.iterations} for {text}"
+        for mutation_idx, results in enumerate(
+            autoedit(
+                model=model,
+                diffusion=diffusion,
+                ldm=ldm,
+                text_emb_norm=text_emb_norm,
+                clip_model=clip_model,
+                clip_preprocess=clip_preprocess,
+                model_kwargs=kwargs,
+                batch_size=args.batch_size,
+                prefix=prefix,
+                device=device,
+                guidance_scale=args.guidance_scale,
+                width=args.width,
+                height=args.height,
+                num_mutations=args.iterations,
+                starting_radius=args.starting_radius,
+                ending_radius=args.ending_radius,
+                starting_threshold=args.starting_threshold,
+                ending_threshold=args.ending_threshold,
             )
-        if use_wandb:
-            print(f"Generation finished. Syncing table to w&b.")
-            eval_table_artifact.add(eval_table, f"{prefix}_eval_table")
-            wandb.run.log_artifact(eval_table_artifact)
-            wandb.run.finish()
+        ):
+            for batch_idx, (
+                decoded_image_path,
+                vae_image_path,
+                npy_filename,
+                similarity
+            ) in enumerate(results):
+                if use_wandb:
+                    eval_table.add_data(
+                        mutation_idx,
+                        batch_idx,
+                        wandb.Image(str(decoded_image_path)),
+                        wandb.Image(str(vae_image_path)),
+                        similarity,
+                    )
         print(f"Finished simulation for {text}")
+    if use_wandb:
+        print("Finished all texts. Syncing table to w&b.")
+        eval_table_artifact.add(eval_table, f"{prefix}_eval_table")
+        wandb.run.log_artifact(eval_table_artifact)
+        wandb.run.finish()
 
 
 def parse_args():
@@ -393,13 +332,6 @@ def parse_args():
         "--negative", type=str, required=False, default="", help="negative text prompt"
     )
     parser.add_argument(
-        "--skip_timesteps",
-        type=int,
-        required=False,
-        default=0,
-        help="how many diffusion steps are gonna be skipped",
-    )
-    parser.add_argument(
         "--prefix",
         type=str,
         required=False,
@@ -426,35 +358,35 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=10,
+        default=25,
         required=False,
         help="number of mutation steps",
     )
     parser.add_argument(
         "--starting_threshold",
         type=float,
-        default=0.9,
+        default=0.6,
         required=False,
         help="how much of the image to replace at the start of editing (1 = inpaint the entire image)",
     )
     parser.add_argument(
         "--ending_threshold",
         type=float,
-        default=0.8,
+        default=0.5,
         required=False,
         help="how much of the image to replace at the end of editing",
     )
     parser.add_argument(
         "--starting_radius",
         type=float,
-        default=3,
+        default=5,
         required=False,
         help="size of noise blur at the start of editing (larger = coarser changes)",
     )
     parser.add_argument(
         "--ending_radius",
         type=float,
-        default=1.0,
+        default=0.1,
         required=False,
         help="size of noise blur at the end of editing (smaller = editing fine details)",
     )
@@ -469,25 +401,9 @@ def parse_args():
         help="classifier-free guidance scale",
     )
     parser.add_argument(
-        "--clip_guidance",
-        type=bool,
-        action="store_true",
-    )
-    parser.add_argument(
-        "--clip_guidance_scale",
-        type=int,
-        default=150,
-    )
-    parser.add_argument(
         "--steps", type=int, default=0, required=False, help="number of diffusion steps"
     )
     parser.add_argument("--cpu", dest="cpu", action="store_true")
-    parser.add_argument(
-        "--ddim", dest="ddim", action="store_true", help="turn on to use 50 step ddim"
-    )
-    parser.add_argument(
-        "--ddpm", dest="ddpm", action="store_true", help="turn on to use 50 step ddim"
-    )
     parser.add_argument("--aesthetic_rating", type=int, default=9)
     parser.add_argument("--aesthetic_weight", type=float, default=0.0)
     parser.add_argument("--wandb_name", type=str, default=None)
@@ -499,7 +415,6 @@ if __name__ == "__main__":
     try:
         main(args)
     except KeyboardInterrupt as kb_interrupt:
-        print(f"Keyboard Interrupt. Finishing run.")
-
-    if args.wandb_name is not None:
-        wandb.run.finish()
+        print("Keyboard Interrupt. Finishing run.")
+        if args.wandb_name is not None:
+            wandb.run.finish()

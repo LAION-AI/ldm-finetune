@@ -14,9 +14,13 @@ def load_data(
     *,
     data_dir,
     batch_size,
-    image_size,
     random_crop=False,
     random_flip=True,
+    image_key="jpg",
+    caption_key="txt",
+    cache_dir=None,
+    epochs=None,
+    shard_size=None,
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -41,18 +45,23 @@ def load_data(
 
     wds_uris = parse_data_dir(data_dir)
     print(f"Found {len(wds_uris)} tar files of total {len(wds_uris)}")
+
     dataset = load_webdataset(
-        image_size,
+        256, # TODO
         wds_uris,
         random_crop=random_crop,
         random_flip=random_flip,
-        myimg="img",
-        mycap="cap",
-        cache_dir=None,
+        myimg=image_key,
+        mycap=caption_key,
+        cache_dir=cache_dir,
     )
-    dataset = dataset.batched(batch_size, partial=True)
+    if epochs and shard_size:
+        total_size = epochs * shard_size * len(wds_uris)
+        print(f"Number of samples to be trained: {total_size}")
+        dataset = dataset.shuffle(total_size)
+    dataset = dataset.batched(batch_size)
     loader = wds.WebLoader(
-        dataset, batch_size=None, shuffle=False, num_workers=MPI.COMM_WORLD.Get_size()
+        dataset, batch_size=None, shuffle=False
     )
     while True:
         yield from loader
@@ -119,8 +128,8 @@ def load_webdataset(
     file_paths,
     random_crop=False,
     random_flip=False,
-    myimg="img",
-    mycap="cap",
+    myimg="jpg",
+    mycap="txt",
     cache_dir=None,
 ):
     def bytes_to_pil_image(item):
@@ -129,18 +138,17 @@ def load_webdataset(
         return pil_image
 
     def filter_by_item(item):
-        if mycap not in item and "txt" not in item:
-            return False
-        if myimg not in item and "jpg" not in item:
-            return False
+        if mycap not in item: return False
+        if myimg not in item: return False
         return True
 
     def pil_transform_to_np(arr):
         if random_crop:
-            arr = random_crop_arr(arr, resolution)
+            arr = random_crop_arr(arr, resolution, min_crop_frac=0.95) # TODO make this a param
+        else:
+            arr = center_crop_arr(arr, resolution)
         if random_flip and random.random() < 0.5:
             arr = arr[:, ::-1]
-        arr = center_crop_arr(arr, resolution)  # TODO
         arr = arr.astype(np.float32) / 127.5 - 1
         return np.transpose(arr, [2, 0, 1])
 
@@ -150,8 +158,8 @@ def load_webdataset(
         urls=file_paths,
         handler=wds.warn_and_continue,
         cache_dir=cache_dir,
-        shardshuffle=True,
-        nodesplitter=wds.split_by_worker,
+        # shardshuffle=True,
+        # nodesplitter=wds.split_by_worker,
     )
     filtered_dataset = dataset.select(filter_by_item)
     dataset = (
