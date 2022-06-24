@@ -159,6 +159,7 @@ class Predictor(cog.BasePredictor):
         # Image Setup
         image_embed = None
         if init_image:
+            init_image = str(init_image)
             image_embed = prepare_edit(
                 self.ldm, init_image, batch_size, width, height, self.device
             )
