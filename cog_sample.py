@@ -17,10 +17,6 @@ from guided_diffusion.predict_util import (
     average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg, load_aesthetic_vit_l_14_embed, load_bert, load_clip_model, load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
 from guided_diffusion.script_util import create_gaussian_diffusion
 
-MODEL_NAME = "erlich.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
-assert os.path.exists(MODEL_NAME), f"{MODEL_NAME} not found"
-
-
 def set_requires_grad(model, value):
     for param in model.parameters():
         param.requires_grad = value
@@ -35,7 +31,10 @@ os.environ[
 ] = "false"  # required to avoid errors with transformers lib
 
 
-MODEL_PATH = "erlich.pt"
+MODEL_PATH = "gary.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} not found"
+
+
 KL_PATH = "kl-f8.pt"
 BERT_PATH = "bert.pt"
 
