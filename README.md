@@ -4,11 +4,15 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  A
 
 <a href="https://replicate.com/laion-ai/ongo" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=ongo&color=blue"></a>
 
-<img src="/assets/ongo-painting-of-a-farm-with-flowers.png" width="256"></img>
+<img src="/assets/ongo-painting-of-a-farm-with-flowers.png" width="512"></img>
 
 <a href="https://replicate.com/laion-ai/erlich" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=erlich&color=orange"></a>
 
-<img src="/assets/colorful-glowing-low-poly-logo-of-a-lion.png" width="256"></img>
+<img src="/assets/colorful-glowing-low-poly-logo-of-a-lion.png" width="512"></img>
+
+<a href="https://replicate.com/laion-ai/puck" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=puck&color=red"></a>
+
+<img src="/assets/puck-super-mario-world.png" width="512"></img>
 
 
 ## Prerequisites
@@ -122,6 +126,14 @@ wget https://huggingface.co/laion/ongo/resolve/main/ongo.pt
 ```
 
 > ["Ongo Gablogian, the art collector. Charmed, I'm sure."](https://www.youtube.com/watch?v=CuMO5q1Syek)
+
+#### LAION - `puck.pt`
+
+`puck` has been trained on pixel art. While the underlying kl-f8 encoder seems to struggle somewhat with pixel art, results are still interesting.
+
+```sh
+wget https://huggingface.co/laion/puck/resolve/main/puck.pt
+```
 
 ## Generating images
 

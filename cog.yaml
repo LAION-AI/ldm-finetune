@@ -3,6 +3,7 @@
 # image: "r8.im/laion-ai/erlich-autoedit"
 # image: "r8.im/laion-ai/ongo"
 # image: "r8.im/laion-ai/ongo-autoedit"
+# image: "r8.im/afiaka87/erlich"
 build:
   gpu: true
 
@@ -44,22 +45,19 @@ build:
     - "regex==2022.4.24"
     - "rotary-embedding-torch==0.1.5"
     - "tokenizers==0.12.1"
-    - "torch==1.10.0"
-    - "onnx==1.10.0"
-    - "onnxruntime==1.10.0"
-    - "onnxruntime-gpu==1.10.0"
+    - "onnx==1.11.0"
+    - "onnxruntime==1.11.0"
+    - "onnxruntime-gpu==1.11.0"
     - "torchmetrics==0.8.0"
-    - "torchvision==0.11.1"
     - "tqdm==4.64.0"
     - "transformers==4.18.0"
     - "torch-fidelity==0.3.0"
     - "wandb==0.12.17"
   
   run:
-    - pip3 install "git+https://github.com/CompVis/latent-diffusion.git"
-    - pip3 install "git+https://github.com/CompVis/taming-transformers.git"
-    - mkdir -p /root/.cache/clip && wget --output-document "/root/.cache/clip/ViT-L-14.pt" "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt"
+    - pip3 install -e "git+https://github.com/CompVis/latent-diffusion.git#egg=latent_diffusion"
+    - pip3 install -e "git+https://github.com/CompVis/taming-transformers.git#egg=taming_transformers"
     - python3 -c 'from transformers import BertTokenizerFast; t = BertTokenizerFast.from_pretrained("bert-base-uncased");'
 
-# predict: "cog_predict.py:Predictor"
-predict: "autoedit_api.py:Predictor"
+# predict: "cog_autoedit.py:Predictor"
+predict: "cog_sample.py:Predictor"

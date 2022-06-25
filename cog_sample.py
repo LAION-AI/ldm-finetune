@@ -1,17 +1,9 @@
 import random
-import sys
 import typing
 
-from PIL import Image
+from PIL import Image, ImageFile
 
-from clip_custom import clip
-from predict_util import (
-    average_prompt_embed_with_aesthetic_embed,
-    load_aesthetic_vit_l_14_embed,
-    prepare_edit,
-)
-
-sys.path.append("latent-diffusion")
+ImageFile.MAXBLOCK = 2**20
 
 import os
 
@@ -19,19 +11,11 @@ import cog
 import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
-from torchvision.utils import make_grid
 from tqdm.auto import tqdm
 
-from encoders.modules import BERTEmbedder
-from guided_diffusion.script_util import (
-    create_gaussian_diffusion,
-    create_model_and_diffusion,
-    model_and_diffusion_defaults,
-)
-
-MODEL_NAME = "erlich.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
-assert os.path.exists(MODEL_NAME), f"{MODEL_NAME} not found"
-
+from guided_diffusion.predict_util import (
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg, load_aesthetic_vit_l_14_embed, load_bert, load_clip_model, load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
+from guided_diffusion.script_util import create_gaussian_diffusion
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -47,83 +31,33 @@ os.environ[
 ] = "false"  # required to avoid errors with transformers lib
 
 
-def load_finetune() -> typing.Tuple[torch.nn.Module, torch.nn.Module]:
-    """
-    Loads the model and diffusion from an fp16 version of the model.
-    """
-    model_state_dict = torch.load(MODEL_NAME, map_location="cpu")
-    model_config = model_and_diffusion_defaults()
-    model_params = {
-        "attention_resolutions": "32,16,8",
-        "class_cond": False,
-        "diffusion_steps": 1000,
-        "rescale_timesteps": True,
-        "timestep_respacing": "27",
-        "image_size": 32,
-        "learn_sigma": False,
-        "noise_schedule": "linear",
-        "num_channels": 320,
-        "num_heads": 8,
-        "num_res_blocks": 2,
-        "resblock_updown": False,
-        "use_fp16": True,
-        "use_scale_shift_norm": False,
-        "clip_embed_dim": 768 if "clip_proj.weight" in model_state_dict else None,
-        "image_condition": True
-        if model_state_dict["input_blocks.0.0.weight"].shape[1] == 8
-        else False,
-        "super_res_condition": True
-        if "external_block.0.0.weight" in model_state_dict
-        else False,
-    }
-    model_config.update(model_params)
-    model, _ = create_model_and_diffusion(**model_config)
-    model.load_state_dict(model_state_dict, strict=False)
-    return model, model_config
+MODEL_PATH = "gary.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} not found"
 
+
+KL_PATH = "kl-f8.pt"
+BERT_PATH = "bert.pt"
 
 class Predictor(cog.BasePredictor):
-    @torch.inference_mode(mode=True)
+    @torch.inference_mode()
     def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch.backends.cudnn.benchmark = True
+        self.device = torch.device("cuda")
+        print(f"Loading model from {MODEL_PATH}")
+        self.model, self.model_config, self.diffusion = load_diffusion_model(
+            model_path=MODEL_PATH,
+            steps="100", # Stubbed out for now.
+            use_fp16=False,
+            device=self.device,
+        )
+        print(f"Loading vae")
+        self.ldm = load_vae(kl_path=KL_PATH, device=self.device)
+        print(f"Loading CLIP")
+        self.clip_model, self.clip_preprocess = load_clip_model(self.device)
+        print(f"Loading BERT")
+        self.bert = load_bert(BERT_PATH, self.device)
 
-        # Load the model and model_params
-        print("Loading diffusion model")
-        self.model, self.model_config = load_finetune()
-        self.model.requires_grad_(False).eval().to(self.device)
-        if self.model_config["use_fp16"]:
-            self.model.convert_to_fp16()
-        else:
-            self.model.convert_to_fp32()
-
-        # Load CLIP text encoder from slim checkpoint
-        print("Loading CLIP text encoder.")
-        self.clip_model, _ = clip.load("ViT-L/14", device=self.device, jit=False)
-        self.clip_model.eval().requires_grad_(False)
-        self.clip_model.to(self.device)
-        self.clip_preprocess = normalize
-
-        # Load VAE model
-        print("Loading stage 1 VAE model")
-        self.ldm = torch.load("kl-f8.pt", map_location="cpu")
-        self.ldm.to(self.device)
-        self.ldm.eval()
-        self.ldm.requires_grad_(False)
-        set_requires_grad(self.ldm, False)
-
-        # Load BERT model
-        print("Loading BERT model")
-        self.bert = BERTEmbedder(1280, 32)
-        bert_state_dict = torch.load("bert.pt", map_location="cpu")
-        self.bert.load_state_dict(bert_state_dict)
-        self.bert.half().eval()
-        self.bert.to(self.device)
-        set_requires_grad(self.bert, False)
 
     @torch.inference_mode()
-    @torch.cuda.amp.autocast()
     def predict(
         self,
         prompt: str = cog.Input(description="Your text prompt.", default=""),
@@ -148,7 +82,7 @@ class Predictor(cog.BasePredictor):
             ge=15,
         ),
         batch_size: int = cog.Input(
-            default=3, description="Batch size.", choices=[1, 2, 3, 4, 6, 8]
+            default=1, description="Batch size.", choices=[1, 3, 6, 9, 12, 16]
         ),
         width: int = cog.Input(
             default=256,
@@ -179,10 +113,15 @@ class Predictor(cog.BasePredictor):
             ge=-1,
             le=(2**32 - 1),
         ),
-    ) -> typing.Iterator[cog.Path]:
-        if seed == -1:
-            seed = random.randint(0, 2**32 - 1)
-        torch.manual_seed(seed)
+    ) -> typing.Iterator[typing.List[cog.Path]]:
+        if seed > 0:
+            torch.manual_seed(seed)
+        else:
+            seed = random.randint(0, 2**32)
+            torch.manual_seed(seed)
+            print(f"Using seed {seed}")
+        print(f"Running simulation for {prompt}")
+
         # Create diffusion manually so we don't re-init the model just to change timestep_respacing
         self.model_config["timestep_respacing"] = str(steps)
         self.diffusion = create_gaussian_diffusion(
@@ -195,22 +134,18 @@ class Predictor(cog.BasePredictor):
             timestep_respacing=self.model_config["timestep_respacing"],
         )
 
-        # Bert context
-        print("Encoding text with BERT")
-        text_emb = self.bert.encode([prompt] * batch_size).to(self.device).float()
-        text_blank = self.bert.encode([negative] * batch_size).to(self.device).float()
-
-        # CLIP context
-        print("Encoding text with CLIP")
-        text_tokens = clip.tokenize([prompt] * batch_size, truncate=True).to(
-            self.device
+        # Text Setup
+        print(f"Encoding text embeddings with {prompt} dimensions")
+        text_emb, text_blank = bert_encode_cfg(
+            prompt, negative, batch_size, self.device, self.bert
         )
-        text_clip_blank = clip.tokenize([negative] * batch_size, truncate=True).to(
-            self.device
+        text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg(
+            clip_model=self.clip_model,
+            text=prompt,
+            negative=negative,
+            batch_size=batch_size,
+            device=self.device,
         )
-        text_emb_clip = self.clip_model.encode_text(text_tokens)
-        text_emb_clip_blank = self.clip_model.encode_text(text_clip_blank)
-
         print(
             f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
         )
@@ -221,20 +156,30 @@ class Predictor(cog.BasePredictor):
             text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
         )
         # Image Setup
-        print(f"Loading image")
         image_embed = None
-        if self.model_config["image_condition"]:
+        if init_image:
+            init_image = str(init_image)
+            image_embed = prepare_edit(
+                self.ldm, init_image, batch_size, width, height, self.device
+            )
+            print("Image embedding shape:", image_embed.shape)
+        elif self.model_config["image_condition"]:
+            print(
+                "Using inpaint model but no image is provided. Initializing with zeros."
+            )
             image_embed = torch.zeros(
                 batch_size * 2, 4, height // 8, width // 8, device=self.device
             )
-        print("Packing CLIP and BERT embeddings into kwargs")
-        kwargs = {
-            "context": torch.cat([text_emb, text_blank], dim=0).half(),
-            "clip_embed": torch.cat([text_emb_clip, text_emb_clip_blank], dim=0).half()
-            if self.model_config["clip_embed_dim"]
-            else None,
-            "image_embed": image_embed,
-        }
+
+        # Prepare inputs
+        kwargs = pack_model_kwargs(
+            text_emb=text_emb,
+            text_blank=text_blank,
+            text_emb_clip=text_emb_clip,
+            text_emb_clip_blank=text_emb_clip_blank,
+            image_embed=image_embed,
+            model_params=self.model_config,
+        )
 
         # Create a classifier-free guidance sampling function
         def model_fn(x_t, ts, **kwargs):
@@ -247,19 +192,15 @@ class Predictor(cog.BasePredictor):
             eps = torch.cat([half_eps, half_eps], dim=0)
             return torch.cat([eps, rest], dim=1)
 
-        images_per_row = batch_size
-        if batch_size >= 6:
-            images_per_row = batch_size // 2
-
-        def save_sample(sample):
+        def save_sample(sample: torch.Tensor) -> typing.List[torch.Tensor]:
+            """Save a sample of the model's output."""
             final_outputs = []
             for image in sample["pred_xstart"][:batch_size]:
                 image /= 0.18215
                 im = image.unsqueeze(0)
                 out = self.ldm.decode(im)
                 final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
-            grid = make_grid(final_outputs, nrow=images_per_row)
-            return grid
+            return final_outputs
 
         if init_image:
             if init_skip_fraction == 0.0:
@@ -298,13 +239,24 @@ class Predictor(cog.BasePredictor):
             skip_timesteps=init_skip_timesteps,
         )
 
-        log_interval = 5
+        log_interval = 10
         print("Running diffusion...")
-        for j, sample in tqdm(enumerate(samples)):
-            if j % log_interval == 0 and j != self.diffusion.num_timesteps - 1:
-                current_output = save_sample(sample)
-                TF.to_pil_image(current_output).save("current.png")
-                yield cog.Path("current.png")
-
-        yield cog.Path("current.png")
-        print(f"Finished generating with seed {seed}")
+        for timestep_idx, sample in tqdm(enumerate(samples)):
+            if timestep_idx % log_interval == 0 and timestep_idx < self.diffusion.num_timesteps - 1:
+                print(f"Timestep {timestep_idx} - saving sample")
+                current_batch = save_sample(sample)
+                current_batch_paths = []
+                for batch_idx, current_image in enumerate(current_batch):
+                    current_image_path = f"current_{batch_idx}.jpg"
+                    current_batch_paths.append(cog.Path(current_image_path))
+                    TF.to_pil_image(current_image).save(current_image_path)
+                yield current_batch_paths # List[cog.Path]
+            elif timestep_idx == self.diffusion.num_timesteps - 1:
+                print(f"Timestep {timestep_idx} - saving final sample")
+                current_batch = save_sample(sample)
+                current_batch_paths = []
+                for batch_idx, current_image in enumerate(current_batch):
+                    current_image_path = f"current_{batch_idx}.jpg"
+                    current_batch_paths.append(cog.Path(current_image_path))
+                    TF.to_pil_image(current_image).save(current_image_path)
+                yield current_batch_paths
