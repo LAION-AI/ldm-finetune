@@ -187,32 +187,8 @@ You can also use the standalone python scripts from `glid-3-xl`.
 # fast PLMS sampling
 (venv) $ python sample.py --model_path erlich.pt --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
 
-# classifier free guidance + CLIP guidance (better adherence to prompt, much slower)
-(venv) $ python sample.py --clip_guidance --model_path finetune.pt --batch_size 1 --num_batches 12 --text "a cyberpunk girl with a scifi neuralink device on her head | trending on artstation"
-
 # sample with an init image
 (venv) $ python sample.py --init_image picture.jpg --skip_timesteps 10 --model_path ongo.pt --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
-```
-
-### Python - editing images (inpainting)
-
-aka human guided diffusion. You can use inpainting to generate more complex prompts by progressively editing the image
-
-note: you can use > 256px but the model only sees 256x256 at a time, so ensure the inpaint area is smaller than that
-
-```bash
-# install PyQt5 if you want to use a gui, otherwise supply a mask file
-(venv) $ pip install PyQt5
-
-# this will pop up a window, use your mouse to paint
-# use the generated npy files instead of png for best quality
-(venv) $ python sample.py --model_path inpaint.pt --edit output_npy/00000.npy --batch_size 6 --num_batches 6 --text "your prompt"
-
-# after painting, the mask is saved for re-use
-(venv) $ python sample.py --mask mask.png --model_path inpaint.pt --edit output_npy/00000.npy --batch_size 6 --num_batches 6 --text "your prompt"
-
-# additional arguments for uncropping
-(venv) $ python sample.py --edit_x 64 --edit_y 64 --edit_width 128 --edit_height 128 --model_path inpaint.pt --edit output_npy/00000.npy --batch_size 6 --num_batches 6 --text "your prompt"
 ```
 
 ### Autoedit
