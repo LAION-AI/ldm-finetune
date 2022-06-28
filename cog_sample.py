@@ -264,7 +264,7 @@ class Predictor(cog.BasePredictor):
                 and timestep_idx < self.diffusion.num_timesteps - 1
                 and intermediate_outputs
             ):
-                print(f"Timestep {timestep_idx} - saving sample")
+                print(f"Timestep {timestep_idx+1} - saving sample/s")
                 current_batch = save_sample(sample)
                 current_batch_paths = []
                 for batch_idx, current_image in enumerate(current_batch):
@@ -273,7 +273,7 @@ class Predictor(cog.BasePredictor):
                     TF.to_pil_image(current_image).save(current_image_path)
                 yield current_batch_paths  # List[cog.Path]
             elif timestep_idx == self.diffusion.num_timesteps - 1:
-                print(f"Timestep {timestep_idx} - saving final sample")
+                print(f"Saving final sample/s")
                 current_batch = save_sample(sample)
                 current_batch_paths = []
                 for batch_idx, current_image in enumerate(current_batch):
