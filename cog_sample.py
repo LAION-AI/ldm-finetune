@@ -1,3 +1,4 @@
+import copy
 import random
 import typing
 
@@ -11,6 +12,7 @@ import cog
 import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
+
 from guided_diffusion.predict_util import (
     average_prompt_embed_with_aesthetic_embed,
     bert_encode_cfg,
@@ -39,7 +41,7 @@ os.environ[
 ] = "false"  # required to avoid errors with transformers lib
 
 
-MODEL_PATH = "erlich.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+MODEL_PATH = "erlich_fp16.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
 assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} not found"
 
 
@@ -52,19 +54,26 @@ class Predictor(cog.BasePredictor):
     def setup(self):
         self.device = torch.device("cuda")
         self.use_fp16 = True
-        print(f"Loading model from {MODEL_PATH}")
+
+        print(f"Loading latent diffusion model from {MODEL_PATH}")
         self.model, self.model_config, self.diffusion = load_diffusion_model(
             model_path=MODEL_PATH,
             steps="100",  # Stubbed out for now.
             use_fp16=self.use_fp16,
             device=self.device,
         )
-        print(f"Loading vae")
-        self.ldm = load_vae(kl_path=KL_PATH, device=self.device, use_fp16=self.use_fp16)
-        print(f"Loading CLIP")
-        self.clip_model, self.clip_preprocess = load_clip_model(self.device)
-        print(f"Loading BERT")
+
+        print(f"Loading VAE from {KL_PATH}")
+        self.vae_backbone = load_vae(kl_path=KL_PATH, device=self.device, use_fp16=self.use_fp16)
+
+        print(f"Loading CLIP text encoder from textual.onnx")
+        self.clip_model, self.clip_preprocess = load_clip_model(
+            self.device, visual_path=None, textual_path="textual.onnx"
+        )
+
+        print(f"Loading BERT text encoder from {BERT_PATH}")
         self.bert = load_bert(BERT_PATH, self.device, use_fp16=self.use_fp16)
+
 
     @torch.inference_mode()
     def predict(
@@ -168,6 +177,7 @@ class Predictor(cog.BasePredictor):
         text_emb_clip = average_prompt_embed_with_aesthetic_embed(
             text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
         )
+
         # Image Setup TODO - support image inpainting with `prepare_edit`
         print("Using inpaint model but no image is provided. Initializing with zeros.")
         image_embed = torch.zeros(
@@ -184,7 +194,7 @@ class Predictor(cog.BasePredictor):
             model_params=self.model_config,
         )
 
-        # Create a classifier-free guidance sampling function
+        # Create a classifier-free guidance sampling function.
         @torch.cuda.amp.autocast(enabled=self.use_fp16)
         def model_fn(x_t, ts, **kwargs):
             half = x_t[: len(x_t) // 2]
@@ -196,7 +206,6 @@ class Predictor(cog.BasePredictor):
             eps = torch.cat([half_eps, half_eps], dim=0)
             return torch.cat([eps, rest], dim=1)
 
-        @torch.no_grad()
         @torch.cuda.amp.autocast(enabled=self.use_fp16)
         def save_sample(sample: torch.Tensor) -> typing.List[torch.Tensor]:
             """Save a sample of the model's output."""
@@ -204,7 +213,7 @@ class Predictor(cog.BasePredictor):
             for image in sample["pred_xstart"][:batch_size]:
                 image /= 0.18215
                 im = image.unsqueeze(0)
-                out = self.ldm.decode(im)
+                out = self.vae_backbone.decode(im)
                 final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
             return final_outputs
 
@@ -219,7 +228,7 @@ class Predictor(cog.BasePredictor):
             init = Image.open(init_image).convert("RGB")
             init = init.resize((int(width), int(height)), Image.LANCZOS)
             init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
-            h = self.ldm.encode(init * 2 - 1).sample() * 0.18215
+            h = self.vae_backbone.encode(init * 2 - 1).sample() * 0.18215
             init = torch.cat(batch_size * 2 * [h], dim=0)
             if self.use_fp16:
                 init = init.half()
