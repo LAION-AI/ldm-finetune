@@ -11,11 +11,19 @@ import cog
 import torch
 from torchvision import transforms
 from torchvision.transforms import functional as TF
-from tqdm.auto import tqdm
-
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg, load_aesthetic_vit_l_14_embed, load_bert, load_clip_model, load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
+    average_prompt_embed_with_aesthetic_embed,
+    bert_encode_cfg,
+    clip_encode_cfg,
+    load_aesthetic_vit_l_14_embed,
+    load_bert,
+    load_clip_model,
+    load_diffusion_model,
+    load_vae,
+    pack_model_kwargs,
+)
 from guided_diffusion.script_util import create_gaussian_diffusion
+
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -31,31 +39,32 @@ os.environ[
 ] = "false"  # required to avoid errors with transformers lib
 
 
-MODEL_PATH = "gary.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+MODEL_PATH = "erlich.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
 assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} not found"
 
 
 KL_PATH = "kl-f8.pt"
 BERT_PATH = "bert.pt"
 
+
 class Predictor(cog.BasePredictor):
     @torch.inference_mode()
     def setup(self):
         self.device = torch.device("cuda")
+        self.use_fp16 = True
         print(f"Loading model from {MODEL_PATH}")
         self.model, self.model_config, self.diffusion = load_diffusion_model(
             model_path=MODEL_PATH,
-            steps="100", # Stubbed out for now.
-            use_fp16=False,
+            steps="100",  # Stubbed out for now.
+            use_fp16=self.use_fp16,
             device=self.device,
         )
         print(f"Loading vae")
-        self.ldm = load_vae(kl_path=KL_PATH, device=self.device)
+        self.ldm = load_vae(kl_path=KL_PATH, device=self.device, use_fp16=self.use_fp16)
         print(f"Loading CLIP")
         self.clip_model, self.clip_preprocess = load_clip_model(self.device)
         print(f"Loading BERT")
-        self.bert = load_bert(BERT_PATH, self.device)
-
+        self.bert = load_bert(BERT_PATH, self.device, use_fp16=self.use_fp16)
 
     @torch.inference_mode()
     def predict(
@@ -113,6 +122,10 @@ class Predictor(cog.BasePredictor):
             ge=-1,
             le=(2**32 - 1),
         ),
+        intermediate_outputs: bool = cog.Input(
+            default=False,
+            description="Whether to return intermediate outputs. Enable to visualize the diffusion process and/or debug the model. May slow down inference.",
+        ),
     ) -> typing.Iterator[typing.List[cog.Path]]:
         if seed > 0:
             torch.manual_seed(seed)
@@ -155,21 +168,11 @@ class Predictor(cog.BasePredictor):
         text_emb_clip = average_prompt_embed_with_aesthetic_embed(
             text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
         )
-        # Image Setup
-        image_embed = None
-        if init_image:
-            init_image = str(init_image)
-            image_embed = prepare_edit(
-                self.ldm, init_image, batch_size, width, height, self.device
-            )
-            print("Image embedding shape:", image_embed.shape)
-        elif self.model_config["image_condition"]:
-            print(
-                "Using inpaint model but no image is provided. Initializing with zeros."
-            )
-            image_embed = torch.zeros(
-                batch_size * 2, 4, height // 8, width // 8, device=self.device
-            )
+        # Image Setup TODO - support image inpainting with `prepare_edit`
+        print("Using inpaint model but no image is provided. Initializing with zeros.")
+        image_embed = torch.zeros(
+            batch_size * 2, 4, height // 8, width // 8, device=self.device
+        )
 
         # Prepare inputs
         kwargs = pack_model_kwargs(
@@ -182,6 +185,7 @@ class Predictor(cog.BasePredictor):
         )
 
         # Create a classifier-free guidance sampling function
+        @torch.cuda.amp.autocast(enabled=self.use_fp16)
         def model_fn(x_t, ts, **kwargs):
             half = x_t[: len(x_t) // 2]
             combined = torch.cat([half, half], dim=0)
@@ -192,6 +196,8 @@ class Predictor(cog.BasePredictor):
             eps = torch.cat([half_eps, half_eps], dim=0)
             return torch.cat([eps, rest], dim=1)
 
+        @torch.no_grad()
+        @torch.cuda.amp.autocast(enabled=self.use_fp16)
         def save_sample(sample: torch.Tensor) -> typing.List[torch.Tensor]:
             """Save a sample of the model's output."""
             final_outputs = []
@@ -215,6 +221,8 @@ class Predictor(cog.BasePredictor):
             init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
             h = self.ldm.encode(init * 2 - 1).sample() * 0.18215
             init = torch.cat(batch_size * 2 * [h], dim=0)
+            if self.use_fp16:
+                init = init.half()
             # str to int * float -> float
             init_skip_timesteps = (
                 int(self.model_config["timestep_respacing"]) * init_skip_fraction
@@ -241,8 +249,12 @@ class Predictor(cog.BasePredictor):
 
         log_interval = 10
         print("Running diffusion...")
-        for timestep_idx, sample in tqdm(enumerate(samples)):
-            if timestep_idx % log_interval == 0 and timestep_idx < self.diffusion.num_timesteps - 1:
+        for timestep_idx, sample in enumerate(samples):
+            if (
+                timestep_idx % log_interval == 0
+                and timestep_idx < self.diffusion.num_timesteps - 1
+                and intermediate_outputs
+            ):
                 print(f"Timestep {timestep_idx} - saving sample")
                 current_batch = save_sample(sample)
                 current_batch_paths = []
@@ -250,7 +262,7 @@ class Predictor(cog.BasePredictor):
                     current_image_path = f"current_{batch_idx}.jpg"
                     current_batch_paths.append(cog.Path(current_image_path))
                     TF.to_pil_image(current_image).save(current_image_path)
-                yield current_batch_paths # List[cog.Path]
+                yield current_batch_paths  # List[cog.Path]
             elif timestep_idx == self.diffusion.num_timesteps - 1:
                 print(f"Timestep {timestep_idx} - saving final sample")
                 current_batch = save_sample(sample)

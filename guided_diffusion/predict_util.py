@@ -200,29 +200,32 @@ def set_requires_grad(model, value):
 
 # vae
 def load_vae(
-    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda"
+    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda", use_fp16: bool = False
 ):
     """
     Load kl-f8 stage 1 VAE from a checkpoint.
     """
-    ldm = torch.load(kl_path, map_location="cpu")
-    ldm.to(device)
-    ldm.eval()
-    ldm.requires_grad_(clip_guidance)
-    set_requires_grad(ldm, False)
-    return ldm
+    encoder = torch.load(kl_path, map_location="cpu")
+    encoder.to(device)
+    if use_fp16:
+        encoder = encoder.half()
+    encoder.eval()
+    set_requires_grad(encoder, clip_guidance)
+    return encoder
 
 
 # bert-text
-def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda"):
+def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda", use_fp16: bool = False):
     """
     Load BERT from a checkpoint.
     """
     bert = BERTEmbedder(1280, 32)
     sd = torch.load(bert_path, map_location="cpu")
     bert.load_state_dict(sd)
+    if use_fp16:
+        bert = bert.half()
     bert.to(device)
-    bert.half().eval()  # TODO
+    bert.eval()  # TODO
     set_requires_grad(bert, False)
     return bert
 
