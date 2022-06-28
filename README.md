@@ -65,7 +65,7 @@ You can now install this repo by running `pip install -e .` in the project direc
 
 ## CLIP ViT-L/14 - ONNX
 ```sh
-wget -O textual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L/14/textual.onnx'
+wget -O textual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/textual.onnx'
 wget -O visual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/visual.onnx'
 ```
 
