@@ -19,17 +19,14 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  A
 
 Please ensure the following dependencies are installed prior to building this repo:
 
-- software-properties-common
 - build-essential
 - libopenmpi-dev
 - liblzma-dev
-- libnss3-dev
 - zlib1g-dev
-- libgdbm-dev
-- libncurses5-dev
-- libssl-dev
-- libffi-dev
-- libbz2-dev
+
+## Setup
+
+
 
 ### Pytorch
 
@@ -137,6 +134,55 @@ wget https://huggingface.co/laion/puck/resolve/main/puck.pt
 
 ## Generating images
 
+You can run prediction via python or docker. Currently the docker method is best supported.
+
+### Docker/cog
+
+If you have access to a linux machine (or WSL2.0 on Windows 11) with docker installed, you can very easily run models by installing `cog`:
+
+```sh
+sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_`uname -s`_`uname -m`
+sudo chmod +x /usr/local/bin/cog
+```
+
+Modify the `MODEL_PATH` in `cog_sample.py`:
+
+```python
+MODEL_PATH = "erlich.pt"  # Can be erlich, ongo, puck, etc.
+```
+
+Now you can run predictions via docker container using:
+
+```sh
+cog predict -i prompt="a logo of a fox made of fire"
+```
+
+Output will be returned as a base64 string at the end of generation and is also saved locally at `current_{batch_idx}.png`
+
+
+### Flask API
+
+If you'd like to stand up your own ldm-finetune Flask API, you can run:
+
+```sh
+cog build -t my_ldm_image
+docker run -d -p 5000:5000 --gpus all my_ldm_image
+```
+
+Predictions can then be accessed via HTTP:
+
+```sh
+curl http://localhost:5000/predictions -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"input": {"prompt": "a logo of a fox made of fire"}}'
+```
+
+The output from the API will be a list of base64 strings representing your generations.
+
+### Python
+
+You can also use the standalone python scripts from `glid-3-xl`.
+
 ```bash
 # fast PLMS sampling
 (venv) $ python sample.py --model_path erlich.pt --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
@@ -148,7 +194,7 @@ wget https://huggingface.co/laion/puck/resolve/main/puck.pt
 (venv) $ python sample.py --init_image picture.jpg --skip_timesteps 10 --model_path ongo.pt --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
 ```
 
-## Editing images
+### Python - editing images (inpainting)
 
 aka human guided diffusion. You can use inpainting to generate more complex prompts by progressively editing the image
 
@@ -169,7 +215,7 @@ note: you can use > 256px but the model only sees 256x256 at a time, so ensure t
 (venv) $ python sample.py --edit_x 64 --edit_y 64 --edit_width 128 --edit_height 128 --model_path inpaint.pt --edit output_npy/00000.npy --batch_size 6 --num_batches 6 --text "your prompt"
 ```
 
-## Autoedit 
+### Autoedit
 
 > Autoedit uses the inpaint model to give the ldm an image prompting function (that works differently from --init_image)
 > It continuously edits random parts of the image to maximize clip score for the text prompt
@@ -185,18 +231,17 @@ CUDA_VISIBLE_DEVICES=5 python autoedit.py \
     --aesthetic_rating 9 --aesthetic_weight 0.5 --wandb_name autoedit_pixelart
 ```
 
-
 ## Training/Fine tuning
 
 See the script below for an example of finetuning your own model from one of the available chekcpoints. 
 
-
 Finetuning Tips/Tricks
-* NVIDIA GPU required. You will need an A100 or better to use a batch size of 64. Using less may present stability issues.
-* Monitor the `grad_norm` in the output log.  If it ever goes above 1.0 the checkpoint may be ruined due to exploding gradients. 
-    * to fix, try reducing the learning rate, decreasing the batch size.
-    * Train in 32-bit
-    * Resume with saved optimizer state when possible.
+
+- NVIDIA GPU required. You will need an A100 or better to use a batch size of 64. Using less may present stability issues.
+- Monitor the `grad_norm` in the output log.  If it ever goes above 1.0 the checkpoint may be ruined due to exploding gradients.
+  - to fix, try reducing the learning rate, decreasing the batch size.
+    - Train in 32-bit
+    - Resume with saved optimizer state when possible.
 
 ```bash
 #!/bin/bash
