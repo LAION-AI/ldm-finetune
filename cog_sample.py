@@ -2,9 +2,7 @@ import copy
 import random
 import typing
 
-from PIL import Image, ImageFile
-
-ImageFile.MAXBLOCK = 2**20
+from PIL import Image 
 
 import os
 
@@ -42,6 +40,8 @@ os.environ[
 
 
 MODEL_PATH = "erlich_fp16.pt"  # Change to e.g. erlich.pt to use a different checkpoint.
+# MODEL_PATH = "ongo_fp16.pt"
+# MODEL_PATH = "puck_fp16.pt"
 assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} not found"
 
 
@@ -58,7 +58,7 @@ class Predictor(cog.BasePredictor):
         print(f"Loading latent diffusion model from {MODEL_PATH}")
         self.model, self.model_config, self.diffusion = load_diffusion_model(
             model_path=MODEL_PATH,
-            steps="100",  # Stubbed out for now.
+            steps="100",  # Init method requires steps, although we can modify it during inference as well.
             use_fp16=self.use_fp16,
             device=self.device,
         )
@@ -183,6 +183,8 @@ class Predictor(cog.BasePredictor):
         image_embed = torch.zeros(
             batch_size * 2, 4, height // 8, width // 8, device=self.device
         )
+        if self.use_fp16:
+            image_embed = image_embed.half()
 
         # Prepare inputs
         kwargs = pack_model_kwargs(
@@ -228,10 +230,10 @@ class Predictor(cog.BasePredictor):
             init = Image.open(init_image).convert("RGB")
             init = init.resize((int(width), int(height)), Image.LANCZOS)
             init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
-            h = self.vae_backbone.encode(init * 2 - 1).sample() * 0.18215
-            init = torch.cat(batch_size * 2 * [h], dim=0)
             if self.use_fp16:
                 init = init.half()
+            h = self.vae_backbone.encode(init * 2 - 1).sample() * 0.18215
+            init = torch.cat(batch_size * 2 * [h], dim=0)
             # str to int * float -> float
             init_skip_timesteps = (
                 int(self.model_config["timestep_respacing"]) * init_skip_fraction
@@ -270,14 +272,14 @@ class Predictor(cog.BasePredictor):
                 for batch_idx, current_image in enumerate(current_batch):
                     current_image_path = f"current_{batch_idx}.png"
                     current_batch_paths.append(cog.Path(current_image_path))
-                    TF.to_pil_image(current_image).save(current_image_path)
+                    TF.to_pil_image(current_image).save(current_image_path, optimize=True)
                 yield current_batch_paths  # List[cog.Path]
-            elif timestep_idx == self.diffusion.num_timesteps - 1:
-                print(f"Saving final sample/s")
-                current_batch = save_sample(sample)
-                current_batch_paths = []
-                for batch_idx, current_image in enumerate(current_batch):
-                    current_image_path = f"current_{batch_idx}.png"
-                    current_batch_paths.append(cog.Path(current_image_path))
-                    TF.to_pil_image(current_image).save(current_image_path)
-                yield current_batch_paths
+
+        print(f"Saving final sample/s")
+        current_batch = save_sample(sample)
+        current_batch_paths = []
+        for batch_idx, current_image in enumerate(current_batch):
+            current_image_path = f"current_{batch_idx}.png"
+            current_batch_paths.append(cog.Path(current_image_path))
+            TF.to_pil_image(current_image).save(current_image_path, optimize=True)
+        yield current_batch_paths
