@@ -182,11 +182,11 @@ def main(args):
         device=device,
     )
     print(f"Loading vae")
-    ldm = load_vae(kl_path=args.kl_path, device=device)
+    ldm = load_vae(kl_path=args.kl_path, device=device, use_fp16=True)
     print(f"Loading CLIP")
-    clip_model, clip_preprocess = load_clip_model(device)
+    clip_model, clip_preprocess = load_clip_model(device, visual_path="visual.onnx", textual_path="textual.onnx")
     print(f"Loading BERT")
-    bert = load_bert(args.bert_path, device)
+    bert = load_bert(args.bert_path, device, use_fp16=True)
 
     if args.text.endswith(".json") and Path(args.text).exists():
         texts = json.load(open(args.text, "r", encoding="utf-8"))

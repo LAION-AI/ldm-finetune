@@ -12,14 +12,13 @@ from torchvision.transforms import (CenterCrop, Compose, InterpolationMode,
                                     Normalize, Resize, ToTensor)
 from torchvision.transforms import functional as TF
 
-from clip_custom import clip
+from dist.clip_onnx import clip_onnx
+from dist.clip_custom import clip
 from encoders.modules import BERTEmbedder
 from guided_diffusion.script_util import (create_gaussian_diffusion,
                                           create_model_and_diffusion,
                                           model_and_diffusion_defaults)
 
-sys.path.append("CLIP-ONNX")
-from clip_onnx import clip_onnx
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
 
@@ -150,6 +149,7 @@ def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: st
     Load a diffusion model from a checkpoint.
     """
     model_state_dict = torch.load(model_path, map_location="cpu")
+
     model_params = {
         "attention_resolutions": "32,16,8",
         "class_cond": False,
@@ -189,7 +189,6 @@ def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: st
     model.to(device)
     return model, model_config, diffusion
 
-
 def set_requires_grad(model, value):
     """
     Set the requires_grad flag of all parameters in the model.
@@ -200,29 +199,32 @@ def set_requires_grad(model, value):
 
 # vae
 def load_vae(
-    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda"
+    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda", use_fp16: bool = False
 ):
     """
     Load kl-f8 stage 1 VAE from a checkpoint.
     """
-    ldm = torch.load(kl_path, map_location="cpu")
-    ldm.to(device)
-    ldm.eval()
-    ldm.requires_grad_(clip_guidance)
-    set_requires_grad(ldm, False)
-    return ldm
+    encoder = torch.load(kl_path, map_location="cpu")
+    if use_fp16:
+        encoder = encoder.half()
+    encoder.eval()
+    encoder.to(device)
+    set_requires_grad(encoder, clip_guidance)
+    return encoder
 
 
 # bert-text
-def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda"):
+def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda", use_fp16: bool = False):
     """
     Load BERT from a checkpoint.
     """
     bert = BERTEmbedder(1280, 32)
     sd = torch.load(bert_path, map_location="cpu")
     bert.load_state_dict(sd)
+    if use_fp16:
+        bert = bert.half()
     bert.to(device)
-    bert.half().eval()  # TODO
+    bert.eval()  # TODO
     set_requires_grad(bert, False)
     return bert
 
@@ -247,12 +249,17 @@ def _transform(n_px):
 
 
 # clip
-def load_clip_model(device, visual_path="visual.onnx", textual_path="textual.onnx"):
+def load_clip_model(device, visual_path=None, textual_path=None):
     """
     Loads an ONNX-runtime compatible checkpoint for CLIP.
     """
     onnx_model = clip_onnx(None)
-    onnx_model.load_onnx(visual_path, textual_path, logit_scale=100.0000)
+    if visual_path is not None and textual_path is not None:
+        onnx_model.load_onnx(visual_path=visual_path, textual_path=textual_path, logit_scale=100.0000)
+    elif visual_path is not None:
+        onnx_model.load_onnx(visual_path=visual_path)
+    elif textual_path is not None:
+        onnx_model.load_onnx(textual_path=textual_path)
     provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
     onnx_model.start_sessions(providers=[provider])
     return onnx_model, _transform(224)
