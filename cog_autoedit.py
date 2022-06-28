@@ -15,7 +15,7 @@ os.environ[
     "TOKENIZERS_PARALLELISM"
 ] = "false"  # required to avoid errors with transformers lib
 
-MODEL_PATH = "pokemon-final.pt"
+MODEL_PATH = "erlich.pt"
 KL_PATH = "kl-f8.pt"
 BERT_PATH = "bert.pt"
 
