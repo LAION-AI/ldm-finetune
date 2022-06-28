@@ -268,7 +268,7 @@ class Predictor(cog.BasePredictor):
                 current_batch = save_sample(sample)
                 current_batch_paths = []
                 for batch_idx, current_image in enumerate(current_batch):
-                    current_image_path = f"current_{batch_idx}.jpg"
+                    current_image_path = f"current_{batch_idx}.png"
                     current_batch_paths.append(cog.Path(current_image_path))
                     TF.to_pil_image(current_image).save(current_image_path)
                 yield current_batch_paths  # List[cog.Path]
@@ -277,7 +277,7 @@ class Predictor(cog.BasePredictor):
                 current_batch = save_sample(sample)
                 current_batch_paths = []
                 for batch_idx, current_image in enumerate(current_batch):
-                    current_image_path = f"current_{batch_idx}.jpg"
+                    current_image_path = f"current_{batch_idx}.png"
                     current_batch_paths.append(cog.Path(current_image_path))
                     TF.to_pil_image(current_image).save(current_image_path)
                 yield current_batch_paths
