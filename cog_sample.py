@@ -100,7 +100,7 @@ class Predictor(cog.BasePredictor):
             ge=15,
         ),
         batch_size: int = cog.Input(
-            default=1, description="Batch size.", choices=[1, 3, 6, 9, 12, 16]
+            default=1, description="Batch size. (higher = slower)", ge=1, le=16,
         ),
         width: int = cog.Input(
             default=256,
