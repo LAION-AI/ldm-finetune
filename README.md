@@ -14,8 +14,40 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  A
 
 <img src="/assets/puck-super-mario-world.png" width="512"></img>
 
+## Quick start (docker required)
 
-## Prerequisites
+- Install [docker](https://docs.docker.com/get-docker/)
+- Install [cog](https://github.com/replicate/cog/)
+
+The following command will download all weights and run a prediction with your inputs inside a proper docker container.
+
+```sh
+cog predict r8.im/laion-ai/erlich \
+  -i prompt="an armchair in the form of an avocado" \
+  -i negative="" \
+  -i init_image=@path/to/image \
+  -i mask=@path/to/mask \
+  -i guidance_scale=5.0 \
+  -i steps=100 \
+  -i batch_size=4 \
+  -i width=256 \
+  -i height=256 \
+  -i init_skip_fraction=0.0 \
+  -i aesthetic_rating=9 \
+  -i aesthetic_weight=0.5 \
+  -i seed=-1 \
+  -i intermediate_outputs=False
+```
+
+Valid remote image URL's are:
+
+- `r8.im/laion-ai/erlich`
+- `r8.im/laion-ai/ongo`
+- `r8.im/laion-ai/puck`
+
+## Setup
+
+### Prerequisites
 
 Please ensure the following dependencies are installed prior to building this repo:
 
@@ -23,9 +55,6 @@ Please ensure the following dependencies are installed prior to building this re
 - libopenmpi-dev
 - liblzma-dev
 - zlib1g-dev
-
-## Setup
-
 
 
 ### Pytorch
