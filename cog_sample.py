@@ -1,4 +1,5 @@
 import copy
+from pydoc import describe
 import random
 import typing
 
@@ -21,6 +22,7 @@ from guided_diffusion.predict_util import (
     load_diffusion_model,
     load_vae,
     pack_model_kwargs,
+    prepare_edit,
 )
 from guided_diffusion.script_util import create_gaussian_diffusion
 
@@ -85,8 +87,9 @@ class Predictor(cog.BasePredictor):
         ),
         init_image: cog.Path = cog.Input(
             default=None,
-            description="(optional) Initial image to use for the model's prediction.",
+            description="(optional) Initial image to use for the model's prediction. If provided alongside a mask, the image will be inpainted instead.",
         ),
+        mask: cog.Path = cog.Input(default=None, description='a mask image for inpainting an init_image. white pixels = keep, black pixels = discard. resized to width = image width/8, height = image height/8'),
         guidance_scale: float = cog.Input(
             default=5.0,
             description="Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0. In general, going above 5.0 will introduce some artifacting.",
@@ -178,13 +181,47 @@ class Predictor(cog.BasePredictor):
             text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
         )
 
-        # Image Setup TODO - support image inpainting with `prepare_edit`
-        print("Using inpaint model but no image is provided. Initializing with zeros.")
+        # Image Setup
+
+        init = None
+        init_skip_fraction = 0.0
+        init_skip_timesteps = 0
+
         image_embed = torch.zeros(
             batch_size * 2, 4, height // 8, width // 8, device=self.device
         )
-        if self.use_fp16:
-            image_embed = image_embed.half()
+        if init_image and mask: # if both are provided, the user is inpainting.
+            print(f"Using inpaint model with image: {init_image}")
+            image_embed = prepare_edit(self.vae_backbone, str(init_image), width, height, device=self.device)
+            mask_image = Image.open(mask).convert('L')
+            mask_image = mask_image.resize((width//8, height//8), Image.ANTIALIAS)
+            mask = transforms.ToTensor()(mask_image).unsqueeze(0).to(self.device)
+            mask1 = (mask > 0.5)
+            mask1 = mask1.float()
+            image_embed *= mask1
+            image_embed = torch.cat(batch_size*2*[image_embed], dim=0)
+        elif init_image: # if just the image is provided, the user wants to use the image as the init image.
+            if init_skip_fraction == 0.0:
+                print(f"Must specify init_skip_fraction > 0.0 when using init_image.")
+                print(f"Overriding init_skip_fraction to 0.5")
+                init_skip_fraction = 0.5
+            print(
+                f"Loading initial image {init_image} with init_skip_fraction: {init_skip_fraction}"
+            )
+            init = Image.open(init_image).convert("RGB")
+            init = init.resize((int(width), int(height)), Image.LANCZOS)
+            init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
+            if self.use_fp16:
+                init = init.half()
+            h = self.vae_backbone.encode(init * 2 - 1).sample() * 0.18215
+            init = torch.cat(batch_size * 2 * [h], dim=0)
+            # str to int * float -> float
+            init_skip_timesteps = (
+                int(self.model_config["timestep_respacing"]) * init_skip_fraction
+            )
+            # float to int
+            init_skip_timesteps = int(init_skip_timesteps)
+
 
         # Prepare inputs
         kwargs = pack_model_kwargs(
@@ -218,32 +255,6 @@ class Predictor(cog.BasePredictor):
                 out = self.vae_backbone.decode(im)
                 final_outputs.append(out.squeeze(0).add(1).div(2).clamp(0, 1))
             return final_outputs
-
-        if init_image:
-            if init_skip_fraction == 0.0:
-                print(f"Must specify init_skip_fraction > 0.0 when using init_image.")
-                print(f"Overriding init_skip_fraction to 0.5")
-                init_skip_fraction = 0.5
-            print(
-                f"Loading initial image {init_image} with init_skip_fraction: {init_skip_fraction}"
-            )
-            init = Image.open(init_image).convert("RGB")
-            init = init.resize((int(width), int(height)), Image.LANCZOS)
-            init = TF.to_tensor(init).to(self.device).unsqueeze(0).clamp(0, 1)
-            if self.use_fp16:
-                init = init.half()
-            h = self.vae_backbone.encode(init * 2 - 1).sample() * 0.18215
-            init = torch.cat(batch_size * 2 * [h], dim=0)
-            # str to int * float -> float
-            init_skip_timesteps = (
-                int(self.model_config["timestep_respacing"]) * init_skip_fraction
-            )
-            # float to int
-            init_skip_timesteps = int(init_skip_timesteps)
-        else:
-            init = None
-            init_skip_fraction = 0.0
-            init_skip_timesteps = 0
 
         sample_fn = self.diffusion.plms_sample_loop_progressive
         samples = sample_fn(
