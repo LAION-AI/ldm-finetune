@@ -85,67 +85,48 @@ You can now install this repo by running `pip install -e .` in the project direc
 (venv) $ git clone https://github.com/laion-ai/ldm-finetune.git
 (venv) $ cd ldm-finetune
 (venv) $ pip install -e .
+(venv) $ pip install -r requirements.txt
 ```
 
 ## Checkpoints
 
-## CLIP ViT-L/14 - ONNX
+### Foundation/Backbone models:
 ```sh
+# CLIP-ONNX
 wget -O textual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/textual.onnx'
 wget -O visual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/visual.onnx'
-```
 
 ### BERT Text Encoder
+wget --continue https://dall-3.com/models/glid-3-xl/bert.pt
 
-```sh
-wget https://dall-3.com/models/glid-3-xl/bert.pt
-```
-
-### Latent Diffusion Stage 1 (vqgan)
-
-```sh
-wget https://dall-3.com/models/glid-3-xl/kl-f8.pt
+### kl-f8 VAE backbone
+wget --continue https://dall-3.com/models/glid-3-xl/kl-f8.pt
 ```
 
 ### Latent Diffusion Stage 2 (diffusion)
-
 There are several stage 2 checkpoints to choose from:
 
-#### CompVis - `diffusion.pt`
+### (recommended) jack000 - `inpaint.pt`
 
-The original checkpoint from CompVis trained on `LAION-400M`.
+The second finetune from jack000's [glid-3-xl](https://github.com/jack000/glid-3-xl) adds support for inpainting and can be used for unconditional output as well by setting the inpaint `image_embed` to zeros. Additionally finetuned to use the CLIP text embed via cross-attention (similar to unCLIP).
 
-```sh
-wget https://dall-3.com/models/glid-3-xl/diffusion.pt
-```
+wget --continue https://dall-3.com/models/glid-3-xl/inpaint.pt 
 
-#### jack000 - `finetune.pt`
+### LAION Finetuning Checkpoints
 
-The first finetune from jack000's [glid-3-xl](https://github.com/jack000/glid-3-xl). Modified to accept a CLIP text embed and finetuned on curated data to help with watermarks. Doesn't support inpainting.
+Laion also finetuned `inpaint.pt` with the aim of improving logo generation and painting generation.
 
-```sh
-wget https://dall-3.com/models/glid-3-xl/finetune.pt 
-```
-
-#### jack000 - `inpaint.pt`
-
-This second finetune adds support for inpainting and can be used for unconditional output as well by setting the inpaint `image_embed` to zeros.
-
-wget https://dall-3.com/models/glid-3-xl/inpaint.pt
-
-#### LAION - `erlich.pt`
-
+#### Erlich
 `erlich` is [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt) finetuned on a dataset collected from LAION-5B named `Large Logo Dataset`. It consists of roughly 100K images of logos with captions generated via BLIP using aggressive re-ranking and filtering.
 
 ```sh
-wget -O erlich.pt https://huggingface.co/laion/erlich/resolve/main/model/ema_0.9999_120000.pt
+wget --continue -O erlich.pt https://huggingface.co/laion/erlich/resolve/main/model/ema_0.9999_120000.pt
 ```
 
 > ["You know aviato?"](https://www.youtube.com/watch?v=7Q9nQXdzNd0&t=39s)
 
-#### LAION - `ongo.pt`
-
-ONGO is [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt) finetuned on the Wikiart dataset consisting of about 100K paintings with captions generated via BLIP using aggressive re-ranking and filtering. We also make use of the original captions which contain the author name and the painting title. 
+#### Ongo
+Ongo is [inpaint.pt](https://dall-3.com/models/glid-3-xl/inpaint.pt) finetuned on the Wikiart dataset consisting of about 100K paintings with captions generated via BLIP using aggressive re-ranking and filtering. We also make use of the original captions which contain the author name and the painting title. 
 
 ```sh
 wget https://huggingface.co/laion/ongo/resolve/main/ongo.pt
@@ -160,6 +141,16 @@ wget https://huggingface.co/laion/ongo/resolve/main/ongo.pt
 ```sh
 wget https://huggingface.co/laion/puck/resolve/main/puck.pt
 ```
+
+
+
+### CompVis - `diffusion.pt`
+# The original checkpoint from CompVis trained on `LAION-400M`.
+wget --continue https://dall-3.com/models/glid-3-xl/diffusion.pt
+
+### jack000 - `finetune.pt`
+# The first finetune from jack000's [glid-3-xl](https://github.com/jack000/glid-3-xl). Modified to accept a CLIP text embed and finetuned on curated data to help with watermarks. Doesn't support inpainting.
+# wget https://dall-3.com/models/glid-3-xl/finetune.pt 
 
 ## Generating images
 
