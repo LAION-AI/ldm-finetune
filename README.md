@@ -142,15 +142,17 @@ wget https://huggingface.co/laion/ongo/resolve/main/ongo.pt
 wget https://huggingface.co/laion/puck/resolve/main/puck.pt
 ```
 
+#### Other
 
-
+```
 ### CompVis - `diffusion.pt`
-# The original checkpoint from CompVis trained on `LAION-400M`.
+# The original checkpoint from CompVis trained on `LAION-400M`. May output watermarks.
 wget --continue https://dall-3.com/models/glid-3-xl/diffusion.pt
 
 ### jack000 - `finetune.pt`
 # The first finetune from jack000's [glid-3-xl](https://github.com/jack000/glid-3-xl). Modified to accept a CLIP text embed and finetuned on curated data to help with watermarks. Doesn't support inpainting.
 # wget https://dall-3.com/models/glid-3-xl/finetune.pt 
+```
 
 ## Generating images
 
