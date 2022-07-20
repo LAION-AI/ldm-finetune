@@ -1,14 +1,20 @@
 import copy
 import functools
 import os
+from pathlib import Path
+from typing import List
 
 import blobfile as bf
-from guided_diffusion import predict_util
+import matplotlib.pyplot as plt
+import pandas as pd
 import torch as th
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torchvision.transforms import functional as TF
+
+from guided_diffusion import predict_util
+
 from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
@@ -18,6 +24,25 @@ from .resample import LossAwareSampler, UniformSampler
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
 INITIAL_LOG_LOSS_SCALE = 20.0
+
+def save_log_plots(
+    column_names: List=[
+        "loss", "loss_q0",
+        "loss_q1", "loss_q2",
+        "loss_q3", "grad_norm",
+        "param_norm", "samples"
+    ], 
+    smoothing_factor: int=1
+):
+    chart_dir = Path(os.environ["OPENAI_LOGDIR"]).joinpath("charts")
+    chart_dir.mkdir(exist_ok=True)
+    log_plot_dataframe = pd.read_csv(chart_dir.joinpath("progress.csv"))
+    for column_name in column_names:
+        column_df = log_plot_dataframe[[column_name]]
+        if smoothing_factor > 1 and "loss" in column_name: column_df = column_df.rolling(smoothing_factor).mean()
+        column_df.plot()
+        plt.savefig(chart_dir.joinpath(f"{column_name}.png"))
+        plt.close()
 
 
 class TrainLoop:
@@ -213,6 +238,9 @@ class TrainLoop:
                 logger.dumpkvs()
 
             if self.step % self.sample_interval == 0:
+                print(f"Generating loss charts for step {self.step + self.resume_step}")
+                save_log_plots(smoothing_factor=50)
+
                 print(f"step {self.step + self.resume_step}, running inference...")
                 samples = predict_util.sample_diffusion_model(
                     latent_diffusion_model=self.model,
