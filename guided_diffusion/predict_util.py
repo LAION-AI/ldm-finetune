@@ -61,24 +61,25 @@ def sample_diffusion_model(
     )
     prefix = prefix[:255]
 
-    # Text Setup
-    print(f"Encoding text embeddings with {text} dimensions")
+    # BERT Text Setup
     text_emb, text_blank = bert_encode_cfg(text, negative, batch_size, device, bert)
-    text_emb_clip_blank, text_emb_clip, _ = clip_encode_cfg(
-        clip_model=clip_model,
-        text=text,
-        negative=negative,
-        batch_size=batch_size,
-        device=device,
-    )
+
+    # CLIP Text Setup
+    clip_text_tokens = clip.tokenize([text]*batch_size, truncate=True).to(device)
+    clip_blank_tokens = clip.tokenize([negative]*batch_size, truncate=True).to(device)
+
+    clip_text_embed = clip_model.encode_text(clip_text_tokens)
+    clip_blank_embed = clip_model.encode_text(clip_blank_tokens)
+    clip_text_emb_norm = clip_text_embed[0] / clip_text_embed[0].norm(dim=-1, keepdim=True)
+
     print(
         f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
     )
     text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(rating=aesthetic_rating).to(
         device
     )
-    text_emb_clip = average_prompt_embed_with_aesthetic_embed(
-        text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
+    clip_text_embed = average_prompt_embed_with_aesthetic_embed(
+        clip_text_embed, text_emb_clip_aesthetic, aesthetic_weight
     )
     image_embed = torch.zeros(batch_size * 2, 4, height // 8, width // 8, device=device)
 
@@ -86,8 +87,8 @@ def sample_diffusion_model(
     kwargs = pack_model_kwargs(
         text_emb=text_emb,
         text_blank=text_blank,
-        text_emb_clip=text_emb_clip,
-        text_emb_clip_blank=text_emb_clip_blank,
+        text_emb_clip=clip_text_embed,
+        text_emb_clip_blank=clip_blank_embed,
         image_embed=image_embed,
         model_params=diffusion_params,
     )
@@ -249,7 +250,7 @@ def _transform(n_px):
 
 
 # clip
-def load_clip_model(device, visual_path=None, textual_path=None):
+def load_clip_onnx_model(device, visual_path=None, textual_path=None):
     """
     Loads an ONNX-runtime compatible checkpoint for CLIP.
     """
@@ -276,7 +277,7 @@ def bert_encode_cfg(text, negative, batch_size, device, bert=None):
 
 
 # clip context
-def clip_encode_cfg(clip_model, text, negative, batch_size, device):
+def clip_encode_cfg_onnx(clip_model, text, negative, batch_size, device):
     """
     Returns the CLIP classifier-free guidance context for a batch of text.
     """

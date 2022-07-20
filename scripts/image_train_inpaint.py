@@ -10,9 +10,7 @@ from torchvision import transforms
 
 from encoders.modules import BERTEmbedder
 from guided_diffusion import dist_util, logger
-from guided_diffusion.fp16_util import convert_module_to_f16
 from guided_diffusion.image_text_datasets import load_data
-from guided_diffusion.predict_util import set_requires_grad
 from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
     add_dict_to_argparser,
@@ -22,6 +20,13 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.train_util import TrainLoop
 
+def set_requires_grad(model, value):
+    """
+    Set the requires_grad flag of all parameters in the model.
+    """
+    for param in model.parameters():
+        param.requires_grad = value
+
 def main():
     args = create_argparser().parse_args()
 
@@ -29,7 +34,7 @@ def main():
     dist_util.setup_dist()
     logger.configure()
 
-    from clip_custom import clip # make clip end up on the right device
+    from dist.clip_custom import clip # make clip end up on the right device
 
     logger.log("loading clip...")
     clip_model, _ = clip.load('ViT-L/14', device=dist_util.dev(), jit=False)
