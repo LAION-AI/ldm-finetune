@@ -13,7 +13,6 @@ os.environ[
 
 inpaint_model_path = "inpaint.pt"
 
-
 class Predictor(cog.BasePredictor):
     @torch.inference_mode()
     def setup(self):
@@ -93,7 +92,6 @@ class Predictor(cog.BasePredictor):
             description="Whether to return intermediate outputs. Enable to visualize the diffusion process and/or debug the model. May slow down inference.",
         ),
     ) -> typing.Iterator[typing.List[cog.Path]]:
-
         for current_predictions in sample_inpaint(
             prompt=prompt,
             negative=negative,
