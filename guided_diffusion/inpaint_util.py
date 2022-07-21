@@ -303,15 +303,15 @@ def sample_inpaint(
             current_batch_paths = []
             for batch_idx, current_image in enumerate(current_batch):
                 current_image_path = prompt_dir.joinpath(f"ts_{timestep_idx}-batch_{batch_idx}.png")
-                current_batch_paths.append(Path(current_image_path))
+                current_batch_paths.append(current_image_path)
                 TF.to_pil_image(current_image).save(current_image_path, optimize=True)
-            yield current_batch_paths  # List[cog.Path]
+            yield current_batch_paths  # List[str]
 
     print(f"Saving final sample/s")
     current_batch = save_sample(sample)
     current_batch_paths = []
     for batch_idx, current_image in enumerate(current_batch):
         current_image_path = prompt_dir.joinpath(f"ts_{timestep_idx}-batch_{batch_idx}.png")
-        current_batch_paths.append(Path(current_image_path))
+        current_batch_paths.append(current_image_path)
         TF.to_pil_image(current_image).save(current_image_path, optimize=True)
     yield current_batch_paths
