@@ -1,27 +1,29 @@
-import typing
-
-from PIL import Image 
-
 import os
-
-from guided_diffusion.inpaint_util import sample_inpaint, prepare_inpaint_models
+import typing
 
 import cog
 import torch
-from torchvision import transforms
-from torchvision.transforms import functional as TF
+
+from guided_diffusion.inpaint_util import (prepare_inpaint_models,
+                                           sample_inpaint)
 
 os.environ[
     "TOKENIZERS_PARALLELISM"
 ] = "false"  # required to avoid errors with transformers lib
+
+inpaint_model_path = "inpaint.pt"
+
 
 class Predictor(cog.BasePredictor):
     @torch.inference_mode()
     def setup(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.use_fp16 = True
-        self.inpaint_models = prepare_inpaint_models(inpaint_model_path="simulacra_540K.pt", device=self.device, use_fp16=self.use_fp16)
-
+        self.inpaint_models = prepare_inpaint_models(
+            inpaint_model_path=inpaint_model_path,
+            device=self.device,
+            use_fp16=self.use_fp16,
+        )
 
     @torch.inference_mode()
     def predict(
@@ -35,7 +37,10 @@ class Predictor(cog.BasePredictor):
             default=None,
             description="(optional) Initial image to use for the model's prediction. If provided alongside a mask, the image will be inpainted instead.",
         ),
-        mask: cog.Path = cog.Input(default=None, description='a mask image for inpainting an init_image. white pixels = keep, black pixels = discard. resized to width = image width/8, height = image height/8'),
+        mask: cog.Path = cog.Input(
+            default=None,
+            description="a mask image for inpainting an init_image. white pixels = keep, black pixels = discard. resized to width = image width/8, height = image height/8",
+        ),
         guidance_scale: float = cog.Input(
             default=5.0,
             description="Classifier-free guidance scale. Higher values will result in more guidance toward caption, with diminishing returns. Try values between 1.0 and 40.0. In general, going above 5.0 will introduce some artifacting.",
@@ -43,13 +48,16 @@ class Predictor(cog.BasePredictor):
             ge=-20.0,
         ),
         steps: int = cog.Input(
-            default=100,
+            default=50,
             description="Number of diffusion steps to run. Due to PLMS sampling, using more than 100 steps is unnecessary and may simply produce the exact same output.",
             le=250,
             ge=15,
         ),
         batch_size: int = cog.Input(
-            default=1, description="Batch size. (higher = slower)", ge=1, le=16,
+            default=4,
+            description="Batch size. (higher = slower)",
+            ge=1,
+            le=16,
         ),
         width: int = cog.Input(
             default=256,
@@ -86,7 +94,7 @@ class Predictor(cog.BasePredictor):
         ),
     ) -> typing.Iterator[typing.List[cog.Path]]:
 
-        yield from sample_inpaint(
+        for current_predictions in sample_inpaint(
             prompt=prompt,
             negative=negative,
             init_image=str(init_image) if init_image else None,
@@ -104,4 +112,5 @@ class Predictor(cog.BasePredictor):
             use_fp16=self.use_fp16,
             seed=seed,
             loaded_models=self.inpaint_models,
-        )
+        ):
+            yield [cog.Path(p) for p in current_predictions]

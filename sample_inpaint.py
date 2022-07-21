@@ -1,21 +1,15 @@
-from pathlib import Path
-import typing
-
-from PIL import Image 
-
+import argparse
 import os
+from pathlib import Path
 
-from guided_diffusion.inpaint_util import sample_inpaint, prepare_inpaint_models
-
-import torch
-from torchvision import transforms
-from torchvision.transforms import functional as TF
+from guided_diffusion.inpaint_util import (prepare_inpaint_models,
+                                           sample_inpaint)
 
 os.environ[
     "TOKENIZERS_PARALLELISM"
 ] = "false"  # required to avoid errors with transformers lib
 
-import argparse
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompts", type=str, default="")
@@ -30,10 +24,12 @@ def parse_args():
     parser.add_argument("--init_skip_fraction", type=float, default=0.0)
     parser.add_argument("--aesthetic_rating", type=int, default=9)
     parser.add_argument("--aesthetic_weight", type=float, default=0.5)
-    parser.add_argument("--seed", type=int, default=-1)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--intermediate_outputs", type=bool, default=False)
-    parser.add_argument("--model_path", type=str, default="simulacra_540K.pt")
+    parser.add_argument("--model_path", type=str, default="inpaint.pt")
+    parser.add_argument("--output_dir", type=str, default="inpaint_outputs")
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -52,8 +48,11 @@ if __name__ == "__main__":
     seed = args.seed
     intermediate_outputs = args.intermediate_outputs
     model_path = args.model_path
+    output_dir = args.output_dir
 
-    inpaint_models = prepare_inpaint_models(inpaint_model_path=model_path, device="cuda", use_fp16=False)
+    inpaint_models = prepare_inpaint_models(
+        inpaint_model_path=model_path, device="cuda", use_fp16=False
+    )
 
     if ".txt" in prompts and Path(prompts).exists():
         with open(prompts, "r") as f:
@@ -61,7 +60,7 @@ if __name__ == "__main__":
         print(f"Read {len(prompts)} prompts from {prompts}")
     else:
         prompts = [prompts]
-    
+
     for prompt in prompts:
         print(f"Generating prompt: {prompt}")
         generations = list(
@@ -80,6 +79,7 @@ if __name__ == "__main__":
                 aesthetic_weight=aesthetic_weight,
                 seed=seed,
                 intermediate_outputs=intermediate_outputs,
+                output_dir=output_dir,
                 loaded_models=inpaint_models,
             )
         )
