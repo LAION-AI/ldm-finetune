@@ -38,7 +38,7 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  A
     - [Flask API](#flask-api)
     - [Python](#python)
     - [Autoedit](#autoedit)
-  - [Training/Fine tuning](#trainingfine-tuning)
+  - [Finetuning](#finetuning)
 
 ## Quick start (docker required)
 
@@ -242,17 +242,17 @@ You can also use the standalone python scripts from `glid-3-xl`.
 > It continuously edits random parts of the image to maximize clip score for the text prompt
 
 ```bash
-CUDA_VISIBLE_DEVICES=5 python autoedit.py \
-    --model_path erlich_on_pokemon_logs_run2/model017000.pt  --kl_path kl-f8.pt --bert_path bert.pt \
-    --text "high quality professional pixel art" --negative "" --prefix autoedit_debug \
+$ (venv) python autoedit.py \
+    --model_path inpaint.pt --kl_path kl-f8.pt --bert_path bert.pt \
+    --text "high quality professional pixel art" --negative "" --prefix autoedit_generations \
     --batch_size 16 --width 256 --height 256 --iterations 25 \
     --starting_threshold 0.6 --ending_threshold 0.5 \
     --starting_radius 5 --ending_radius 0.1 \
     --seed -1 --guidance_scale 5.0 --steps 30 \
-    --aesthetic_rating 9 --aesthetic_weight 0.5 --wandb_name autoedit_pixelart
+    --aesthetic_rating 9 --aesthetic_weight 0.5 --wandb_name my_autoedit_wandb_artifact
 ```
 
-## Training/Fine tuning
+## Finetuning
 
 See the script below for an example of finetuning your own model from one of the available chekcpoints. 
 
