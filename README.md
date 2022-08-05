@@ -69,10 +69,8 @@ source venv/bin/activate
 
 Before installing, you should install pytorch manually by following the instructions at [pytorch.org](https://pytorch.org/get-started/locally/)
 
-In my instance, I needed the following for cuda 11.3.
-
 ```bash
-(venv) $ pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu113
+(venv) $ pip install torch==1.10.1+cu111 torchvision==0.11.2+cu111 torchaudio==0.10.1 -f https://download.pytorch.org/whl/torch_stable.html
 ```
 
 To check your cuda version, run `nvidia-smi`.
@@ -222,7 +220,7 @@ You can also use the standalone python scripts from `glid-3-xl`.
 CUDA_VISIBLE_DEVICES=5 python autoedit.py \
     --model_path erlich_on_pokemon_logs_run2/model017000.pt  --kl_path kl-f8.pt --bert_path bert.pt \
     --text "high quality professional pixel art" --negative "" --prefix autoedit_debug \
-    --batch_size 64 --width 256 --height 256 --iterations 25 \
+    --batch_size 16 --width 256 --height 256 --iterations 25 \
     --starting_threshold 0.6 --ending_threshold 0.5 \
     --starting_radius 5 --ending_radius 0.1 \
     --seed -1 --guidance_scale 5.0 --steps 30 \
