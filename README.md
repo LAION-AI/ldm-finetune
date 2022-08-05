@@ -90,9 +90,8 @@ You can now install this repo by running `pip install -e .` in the project direc
 
 ### Foundation/Backbone models:
 ```sh
-# CLIP-ONNX
-wget -O textual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/textual.onnx'
-wget -O visual.onnx 'https://clip-as-service.s3.us-east-2.amazonaws.com/models/onnx/ViT-L-14/visual.onnx'
+# OpenAI CLIP ViT-L/14
+wget -P /root/.cache/clip" "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt
 
 ### BERT Text Encoder
 wget --continue https://dall-3.com/models/glid-3-xl/bert.pt

@@ -1,24 +1,32 @@
-from email.mime import base
-import sys
 import os
+import sys
 import typing
+from email.mime import base
 from pathlib import Path
 
 import numpy as np
 import torch
+from dist.clip_custom import clip
+from dist.clip_onnx import clip_onnx
+from encoders.modules import BERTEmbedder
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
-from torchvision.transforms import (CenterCrop, Compose, InterpolationMode,
-                                    Normalize, Resize, ToTensor)
+from torchvision.transforms import (
+    CenterCrop,
+    Compose,
+    InterpolationMode,
+    Normalize,
+    Resize,
+    ToTensor,
+)
 from torchvision.transforms import functional as TF
 
-from dist.clip_onnx import clip_onnx
-from dist.clip_custom import clip
-from encoders.modules import BERTEmbedder
-from guided_diffusion.script_util import (create_gaussian_diffusion,
-                                          create_model_and_diffusion,
-                                          model_and_diffusion_defaults)
+from guided_diffusion.script_util import (
+    create_gaussian_diffusion,
+    create_model_and_diffusion,
+    model_and_diffusion_defaults,
+)
 
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))
@@ -66,12 +74,14 @@ def sample_diffusion_model(
     text_emb, text_blank = bert_encode_cfg(text, negative, batch_size, device, bert)
 
     # CLIP Text Setup
-    clip_text_tokens = clip.tokenize([text]*batch_size, truncate=True).to(device)
-    clip_blank_tokens = clip.tokenize([negative]*batch_size, truncate=True).to(device)
+    clip_text_tokens = clip.tokenize([text] * batch_size, truncate=True).to(device)
+    clip_blank_tokens = clip.tokenize([negative] * batch_size, truncate=True).to(device)
 
     clip_text_embed = clip_model.encode_text(clip_text_tokens)
     clip_blank_embed = clip_model.encode_text(clip_blank_tokens)
-    clip_text_emb_norm = clip_text_embed[0] / clip_text_embed[0].norm(dim=-1, keepdim=True)
+    clip_text_emb_norm = clip_text_embed[0] / clip_text_embed[0].norm(
+        dim=-1, keepdim=True
+    )
 
     print(
         f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
@@ -191,6 +201,7 @@ def load_diffusion_model(model_path: str, steps: int, use_fp16: bool, device: st
     model.to(device)
     return model, model_config, diffusion
 
+
 def set_requires_grad(model, value):
     """
     Set the requires_grad flag of all parameters in the model.
@@ -201,7 +212,10 @@ def set_requires_grad(model, value):
 
 # vae
 def load_vae(
-    kl_path: Path = Path("kl-f8.pt"), clip_guidance: bool = False, device: str = "cuda", use_fp16: bool = False
+    kl_path: Path = Path("kl-f8.pt"),
+    clip_guidance: bool = False,
+    device: str = "cuda",
+    use_fp16: bool = False,
 ):
     """
     Load kl-f8 stage 1 VAE from a checkpoint.
@@ -216,7 +230,9 @@ def load_vae(
 
 
 # bert-text
-def load_bert(bert_path: Path = Path("bert.pt"), device: str = "cuda", use_fp16: bool = False):
+def load_bert(
+    bert_path: Path = Path("bert.pt"), device: str = "cuda", use_fp16: bool = False
+):
     """
     Load BERT from a checkpoint.
     """
@@ -251,20 +267,11 @@ def _transform(n_px):
 
 
 # clip
-def load_clip_onnx_model(device, visual_path=None, textual_path=None):
+def load_clip_model_and_transform(device):
     """
     Loads an ONNX-runtime compatible checkpoint for CLIP.
     """
-    onnx_model = clip_onnx(None)
-    if visual_path is not None and textual_path is not None:
-        onnx_model.load_onnx(visual_path=visual_path, textual_path=textual_path, logit_scale=100.0000)
-    elif visual_path is not None:
-        onnx_model.load_onnx(visual_path=visual_path)
-    elif textual_path is not None:
-        onnx_model.load_onnx(textual_path=textual_path)
-    provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
-    onnx_model.start_sessions(providers=[provider])
-    return onnx_model, _transform(224)
+    return clip.load(name="ViT-L/14", device=device)
 
 
 # bert context
@@ -278,38 +285,33 @@ def bert_encode_cfg(text, negative, batch_size, device, bert=None):
 
 
 # clip context
-def clip_encode_cfg_onnx(clip_model, text, negative, batch_size, device):
+def clip_encode_prompt_and_uncond(clip_model, text, negative, batch_size, device):
     """
     Returns the CLIP classifier-free guidance context for a batch of text.
     """
     text_tokens = clip.tokenize([text] * batch_size, truncate=True)
-    text_tokens = text_tokens.detach().cpu().numpy().astype(np.int64)
-
     negative_tokens = clip.tokenize([negative] * batch_size, truncate=True)
-    negative_tokens = negative_tokens.detach().cpu().numpy().astype(np.int64)
-
-    text_emb_clip = torch.Tensor(clip_model.encode_text(text_tokens)).to(device)
-    text_emb_clip_blank = torch.Tensor(clip_model.encode_text(negative_tokens)).to(
-        device
-    )
-
+    text_emb_clip = clip_model.encode_text(text_tokens).to(device).float()
+    text_emb_clip_blank = clip_model.encode_text(negative_tokens).to(device).float()
     text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)
     return text_emb_clip_blank, text_emb_clip, text_emb_norm
 
 
-def prepare_edit(ldm, edit, width=256, height=256, edit_y=0, edit_x=0, device="cuda", use_fp16=True):
+def prepare_edit(
+    ldm, edit, width=256, height=256, edit_y=0, edit_x=0, device="cuda", use_fp16=True
+):
     """
     Given an `edit` image path, embed it and return the embedding. `edit` may be an image or a `.npy` file.
     """
-    if edit.endswith('.npy'):
-        with open(edit, 'rb') as f:
+    if edit.endswith(".npy"):
+        with open(edit, "rb") as f:
             im = np.load(f)
             im = torch.from_numpy(im).unsqueeze(0).to(device)
 
-            input_image = torch.zeros(1, 4, height//8, width//8, device=device)
+            input_image = torch.zeros(1, 4, height // 8, width // 8, device=device)
 
-            y = edit_y//8
-            x = edit_x//8
+            y = edit_y // 8
+            x = edit_x // 8
 
             ycrop = y + im.shape[2] - input_image.shape[2]
             xcrop = x + im.shape[3] - input_image.shape[3]
@@ -317,30 +319,42 @@ def prepare_edit(ldm, edit, width=256, height=256, edit_y=0, edit_x=0, device="c
             ycrop = ycrop if ycrop > 0 else 0
             xcrop = xcrop if xcrop > 0 else 0
 
-            input_image[0,:,y if y >=0 else 0:y+im.shape[2],x if x >=0 else 0:x+im.shape[3]] = im[:,:,0 if y > 0 else -y:im.shape[2]-ycrop,0 if x > 0 else -x:im.shape[3]-xcrop]
+            input_image[
+                0,
+                :,
+                y if y >= 0 else 0 : y + im.shape[2],
+                x if x >= 0 else 0 : x + im.shape[3],
+            ] = im[
+                :,
+                :,
+                0 if y > 0 else -y : im.shape[2] - ycrop,
+                0 if x > 0 else -x : im.shape[3] - xcrop,
+            ]
             if use_fp16:
                 input_image = input_image.half()
 
             input_image_pil = ldm.decode(input_image)
-            input_image_pil = TF.to_pil_image(input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1))
+            input_image_pil = TF.to_pil_image(
+                input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1)
+            )
 
             input_image *= 0.18215
     else:
-        input_image_pil = Image.open(edit).convert('RGB')
+        input_image_pil = Image.open(edit).convert("RGB")
         input_image_pil = ImageOps.fit(input_image_pil, (width, height))
 
-        input_image = torch.zeros(1, 4, height//8, width//8, device=device)
+        input_image = torch.zeros(1, 4, height // 8, width // 8, device=device)
 
         im = transforms.ToTensor()(input_image_pil).unsqueeze(0).to(device)
-        im = 2*im-1
+        im = 2 * im - 1
         if use_fp16:
             im = im.half()
         im = ldm.encode(im).sample()
 
-        y = edit_y//8
-        x = edit_x//8
+        y = edit_y // 8
+        x = edit_x // 8
 
-        input_image = torch.zeros(1, 4, height//8, width//8, device=device)
+        input_image = torch.zeros(1, 4, height // 8, width // 8, device=device)
 
         ycrop = y + im.shape[2] - input_image.shape[2]
         xcrop = x + im.shape[3] - input_image.shape[3]
@@ -348,17 +362,28 @@ def prepare_edit(ldm, edit, width=256, height=256, edit_y=0, edit_x=0, device="c
         ycrop = ycrop if ycrop > 0 else 0
         xcrop = xcrop if xcrop > 0 else 0
 
-        input_image[0,:,y if y >=0 else 0:y+im.shape[2],x if x >=0 else 0:x+im.shape[3]] = im[:,:,0 if y > 0 else -y:im.shape[2]-ycrop,0 if x > 0 else -x:im.shape[3]-xcrop]
+        input_image[
+            0,
+            :,
+            y if y >= 0 else 0 : y + im.shape[2],
+            x if x >= 0 else 0 : x + im.shape[3],
+        ] = im[
+            :,
+            :,
+            0 if y > 0 else -y : im.shape[2] - ycrop,
+            0 if x > 0 else -x : im.shape[3] - xcrop,
+        ]
 
         if use_fp16:
             input_image = input_image.half()
 
         input_image_pil = ldm.decode(input_image)
-        input_image_pil = TF.to_pil_image(input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1))
+        input_image_pil = TF.to_pil_image(
+            input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1)
+        )
 
         input_image *= 0.18215
     return input_image
-        
 
 
 def create_cfg_fn(model, guidance_scale):
@@ -390,8 +415,10 @@ def log_autoedit_sample(
     """
     Logs an autoedit sample to a file.
     """
-    base_dir = base_dir / prefix / f'batchidx_{batch_index:04d}'
-    decoded_image_path = base_dir.joinpath("img", base_dir, f"simulation_{simulation_iter:04d}_{score.item():.3f}.png")
+    base_dir = base_dir / prefix / f"batchidx_{batch_index:04d}"
+    decoded_image_path = base_dir.joinpath(
+        "img", base_dir, f"simulation_{simulation_iter:04d}_{score.item():.3f}.png"
+    )
     decoded_image_path.parent.mkdir(parents=True, exist_ok=True)
     pil_image = TF.to_pil_image(decoded_image.squeeze(0).add(1).div(2).clamp(0, 1))
     pil_image.save(decoded_image_path)

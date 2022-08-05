@@ -13,11 +13,12 @@ from torchvision.transforms import functional as TF
 from tqdm import tqdm
 
 import wandb
+from dist.clip_custom import clip
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg,
-    clip_encode_cfg_onnx, create_cfg_fn, load_aesthetic_vit_l_14_embed,
-    load_bert, load_clip_onnx_model, load_diffusion_model, load_vae,
-    log_autoedit_sample, pack_model_kwargs, prepare_edit)
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, create_cfg_fn,
+    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model_and_transform,
+    load_diffusion_model, load_vae, log_autoedit_sample, pack_model_kwargs,
+    prepare_edit)
 from guided_diffusion.respace import SpacedDiffusion
 
 OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
@@ -184,9 +185,7 @@ def main(args):
     print(f"Loading vae")
     ldm = load_vae(kl_path=args.kl_path, device=device, use_fp16=True)
     print(f"Loading CLIP")
-    clip_model, clip_preprocess = load_clip_onnx_model(
-        device, visual_path="visual.onnx", textual_path="textual.onnx"
-    )
+    clip_model, clip_preprocess = load_clip_model_and_transform(device=device)
     print(f"Loading BERT")
     bert = load_bert(args.bert_path, device, use_fp16=True)
 
@@ -210,13 +209,11 @@ def main(args):
         text_emb, text_blank = bert_encode_cfg(
             text, args.negative, args.batch_size, device, bert
         )
-        text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg_onnx(
-            clip_model=clip_model,
-            text=text,
-            negative=args.negative,
-            batch_size=args.batch_size,
-            device=device,
-        )
+        text_tokens = clip.tokenize([text] * args.batch_size, truncate=True)
+        negative_tokens = clip.tokenize([args.negative] * args.batch_size, truncate=True)
+        text_emb_clip = clip_model.encode_text(text_tokens).to(device).float()
+        text_emb_clip_blank = clip_model.encode_text(negative_tokens).to(device).float()
+        text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)
         print(
             f"Using aesthetic embedding {args.aesthetic_rating} with weight {args.aesthetic_weight}"
         )

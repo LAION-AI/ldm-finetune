@@ -1,34 +1,23 @@
+import os
+import random
 import typing
 from pathlib import Path
-import torch
-import random
+import re
+import unicodedata
 
-from guided_diffusion.predict_util import average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg_onnx, load_aesthetic_vit_l_14_embed, pack_model_kwargs, prepare_edit, sample_diffusion_model
-from guided_diffusion.script_util import create_gaussian_diffusion
-import random
-import typing
-
-from PIL import Image 
-
-import os
 
 import torch
+from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed,
-    bert_encode_cfg,
-    clip_encode_cfg_onnx,
-    load_aesthetic_vit_l_14_embed,
-    load_bert,
-    load_clip_onnx_model,
-    load_diffusion_model,
-    load_vae,
-    pack_model_kwargs,
-    prepare_edit,
-)
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg,
+    load_aesthetic_vit_l_14_embed, load_bert,
+    load_clip_model_and_transform, load_diffusion_model, load_vae, pack_model_kwargs,
+    prepare_edit)
 from guided_diffusion.script_util import create_gaussian_diffusion
+from dist.clip_custom import clip
 
 
 def set_requires_grad(model, value):
@@ -48,7 +37,10 @@ os.environ[
 KL_PATH = "kl-f8.pt"
 BERT_PATH = "bert.pt"
 
-def prepare_inpaint_models(inpaint_model_path: str = "inpaint.pt", device: str = "cuda", use_fp16: bool = False):
+
+def prepare_inpaint_models(
+    inpaint_model_path: str = "inpaint.pt", device: str = "cuda", use_fp16: bool = False
+):
     device = torch.device(device)
     print(f"Loading latent diffusion model from {inpaint_model_path}")
     inpaint_model, inpaint_model_config, inpaint_diffusion = load_diffusion_model(
@@ -62,8 +54,8 @@ def prepare_inpaint_models(inpaint_model_path: str = "inpaint.pt", device: str =
     vae_backbone = load_vae(kl_path=KL_PATH, device=device, use_fp16=use_fp16)
 
     print(f"Loading CLIP text encoder from textual.onnx")
-    clip_model, clip_preprocess = load_clip_onnx_model(
-        device, visual_path=None, textual_path="textual.onnx"
+    clip_model, clip_preprocess = load_clip_model_and_transform(
+        device
     )
 
     print(f"Loading BERT text encoder from {BERT_PATH}")
@@ -78,8 +70,7 @@ def prepare_inpaint_models(inpaint_model_path: str = "inpaint.pt", device: str =
         bert=bert,
     )
 
-import unicodedata
-import re
+
 
 def slugify(value, allow_unicode=False):
     """
@@ -91,16 +82,21 @@ def slugify(value, allow_unicode=False):
     """
     value = str(value)
     if allow_unicode:
-        value = unicodedata.normalize('NFKC', value)
+        value = unicodedata.normalize("NFKC", value)
     else:
-        value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
-    value = re.sub(r'[^\w\s-]', '', value.lower())
-    return re.sub(r'[-\s]+', '-', value).strip('-_')
+        value = (
+            unicodedata.normalize("NFKD", value)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+    value = re.sub(r"[^\w\s-]", "", value.lower())
+    return re.sub(r"[-\s]+", "-", value).strip("-_")
+
 
 def sample_inpaint(
     prompt: str,
     negative: str = "",
-    init_image: str = None, 
+    init_image: str = None,
     mask: str = None,
     steps: int = 100,
     init_skip_fraction: float = 0.5,
@@ -156,12 +152,11 @@ def sample_inpaint(
         torch.manual_seed(seed)
         print(f"Using seed {seed}")
 
-
     if loaded_models is None:
         loaded_models = prepare_inpaint_models(device=device, use_fp16=use_fp16)
     else:
         print("Using preloaded models")
-    
+
     model_config = loaded_models["inpaint_model_config"]
     clip_model = loaded_models["clip_model"]
     bert = loaded_models["bert"]
@@ -182,22 +177,19 @@ def sample_inpaint(
 
     # Text Setup
     print(f"Encoding text embeddings with {prompt} dimensions")
-    text_emb, text_blank = bert_encode_cfg(
-        prompt, negative, batch_size, device, bert
-    )
-    text_emb_clip_blank, text_emb_clip, text_emb_norm = clip_encode_cfg_onnx(
-        clip_model=clip_model,
-        text=prompt,
-        negative=negative,
-        batch_size=batch_size,
-        device=device,
-    )
+    text_emb, text_blank = bert_encode_cfg(prompt, negative, batch_size, device, bert)
+
+    text_tokens = clip.tokenize([prompt] * batch_size, truncate=True).to(device)
+    negative_tokens = clip.tokenize([negative] * batch_size, truncate=True).to(device)
+    text_emb_clip = clip_model.encode_text(text_tokens).to(device).float()
+    text_emb_clip_blank = clip_model.encode_text(negative_tokens).to(device).float()
+    text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)
     print(
         f"Using aesthetic embedding {aesthetic_rating} with weight {aesthetic_weight}"
     )
-    text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(
-        rating=aesthetic_rating
-    ).to(device)
+    text_emb_clip_aesthetic = load_aesthetic_vit_l_14_embed(rating=aesthetic_rating).to(
+        device
+    )
     text_emb_clip = average_prompt_embed_with_aesthetic_embed(
         text_emb_clip, text_emb_clip_aesthetic, aesthetic_weight
     )
@@ -208,20 +200,22 @@ def sample_inpaint(
     init_skip_fraction = 0.0
     init_skip_timesteps = 0
 
-    image_embed = torch.zeros(
-        batch_size * 2, 4, height // 8, width // 8, device=device
-    )
-    if init_image and mask: # if both are provided, the user is inpainting.
+    image_embed = torch.zeros(batch_size * 2, 4, height // 8, width // 8, device=device)
+    if init_image and mask:  # if both are provided, the user is inpainting.
         print(f"Using inpaint model with image: {init_image}")
-        image_embed = prepare_edit(vq_decoder, str(init_image), width, height, device=device)
-        mask_image = Image.open(mask).convert('L')
-        mask_image = mask_image.resize((width//8, height//8), Image.ANTIALIAS)
+        image_embed = prepare_edit(
+            vq_decoder, str(init_image), width, height, device=device
+        )
+        mask_image = Image.open(mask).convert("L")
+        mask_image = mask_image.resize((width // 8, height // 8), Image.ANTIALIAS)
         mask = transforms.ToTensor()(mask_image).unsqueeze(0).to(device)
-        mask1 = (mask > 0.5)
+        mask1 = mask > 0.5
         mask1 = mask1.float()
         image_embed *= mask1
-        image_embed = torch.cat(batch_size*2*[image_embed], dim=0)
-    elif init_image: # if just the image is provided, the user wants to use the image as the init image.
+        image_embed = torch.cat(batch_size * 2 * [image_embed], dim=0)
+    elif (
+        init_image
+    ):  # if just the image is provided, the user wants to use the image as the init image.
         if init_skip_fraction == 0.0:
             print(f"Must specify init_skip_fraction > 0.0 when using init_image.")
             print(f"Overriding init_skip_fraction to 0.5")
@@ -242,7 +236,6 @@ def sample_inpaint(
         )
         # float to int
         init_skip_timesteps = int(init_skip_timesteps)
-
 
     # Prepare inputs
     kwargs = pack_model_kwargs(
@@ -302,7 +295,9 @@ def sample_inpaint(
             current_batch = save_sample(sample)
             current_batch_paths = []
             for batch_idx, current_image in enumerate(current_batch):
-                current_image_path = prompt_dir.joinpath(f"ts_{timestep_idx}-batch_{batch_idx}.png")
+                current_image_path = prompt_dir.joinpath(
+                    f"ts_{timestep_idx}-batch_{batch_idx}.png"
+                )
                 current_batch_paths.append(current_image_path)
                 TF.to_pil_image(current_image).save(current_image_path, optimize=True)
             yield current_batch_paths  # List[str]
@@ -311,7 +306,9 @@ def sample_inpaint(
     current_batch = save_sample(sample)
     current_batch_paths = []
     for batch_idx, current_image in enumerate(current_batch):
-        current_image_path = prompt_dir.joinpath(f"ts_{timestep_idx}-batch_{batch_idx}.png")
+        current_image_path = prompt_dir.joinpath(
+            f"ts_{timestep_idx}-batch_{batch_idx}.png"
+        )
         current_batch_paths.append(current_image_path)
         TF.to_pil_image(current_image).save(current_image_path, optimize=True)
     yield current_batch_paths
