@@ -1,8 +1,12 @@
-# Finetune Latent Diffusion
+# `ldm-finetune`
+
+CompVis `latent-diffusion` finetuned on art (ongo), logo (erlich) and pixel-art (puck) generation.
 
 This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  Aesthetic CLIP embeds are provided by [aesthetic-predictor](https://github.com/LAION-AI/aesthetic-predictor)
 
-<a href="https://replicate.com/laion-ai/ongo" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=ongo&color=blue"></a>
+<img src="https://img.shields.io/static/v1?label=run&message=ongo&color=blue"></a>
+
+<a href="https://replicate.com/laion-ai/ongo" target="_blank">
 
 <img src="/assets/ongo-painting-of-a-farm-with-flowers.png" width="512"></img>
 
@@ -13,6 +17,28 @@ This repo is modified from [glid-3-xl](https://github.com/jack000/glid-3-xl).  A
 <a href="https://replicate.com/laion-ai/puck" target="_blank"><img src="https://img.shields.io/static/v1?label=run&message=puck&color=red"></a>
 
 <img src="/assets/puck-super-mario-world.png" width="512"></img>
+
+- [`ldm-finetune`](#ldm-finetune)
+  - [Quick start (docker required)](#quick-start-docker-required)
+  - [Setup](#setup)
+    - [Prerequisites](#prerequisites)
+    - [Pytorch](#pytorch)
+    - [Install ldm-finetune](#install-ldm-finetune)
+  - [Checkpoints](#checkpoints)
+    - [Foundation/Backbone models:](#foundationbackbone-models)
+    - [Latent Diffusion Stage 2 (diffusion)](#latent-diffusion-stage-2-diffusion)
+    - [(recommended) jack000 - `inpaint.pt`](#recommended-jack000---inpaintpt)
+    - [LAION Finetuning Checkpoints](#laion-finetuning-checkpoints)
+      - [Erlich](#erlich)
+      - [Ongo](#ongo)
+      - [LAION - `puck.pt`](#laion---puckpt)
+      - [Other](#other)
+  - [Generating images](#generating-images)
+    - [Docker/cog](#dockercog)
+    - [Flask API](#flask-api)
+    - [Python](#python)
+    - [Autoedit](#autoedit)
+  - [Training/Fine tuning](#trainingfine-tuning)
 
 ## Quick start (docker required)
 
