@@ -58,7 +58,7 @@ def prepare_inpaint_models(
     print(f"Loading VAE from {KL_PATH}")
     vae_backbone = load_vae(kl_path=KL_PATH, device=device, use_fp16=use_fp16)
 
-    print(f"Loading CLIP text encoder from textual.onnx")
+    print(f"Loading CLIP")
     clip_model, clip_preprocess = load_clip_model_and_transform(device)
 
     print(f"Loading BERT text encoder from {BERT_PATH}")
