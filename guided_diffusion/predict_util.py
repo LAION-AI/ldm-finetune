@@ -1,3 +1,4 @@
+from email.mime import base
 import sys
 import os
 import typing
@@ -390,27 +391,13 @@ def log_autoedit_sample(
     """
     Logs an autoedit sample to a file.
     """
-    target_path = base_dir.joinpath(
-        f"{prefix}_iter_{simulation_iter:03}_batch_{batch_index:03}_score_{score.item():.3f}.png"
-    )
+    base_dir = base_dir / prefix
+    log_description = f"{prefix}_batch_{batch_index:03}_score_{score.item():.3f}"
 
-    decoded_image_path = target_path.with_suffix(".png")
-    npy_filename = target_path.with_suffix(".npy")
-    vae_image_path = target_path.with_suffix(".vae.png")
-
-    vae_embed_visual = vae_embed.squeeze(0).detach().clone().add(1).div(2).clamp(0, 1)
-    vae_embed_visual_pil = (
-        TF.to_pil_image(vae_embed_visual).resize((256, 256)).convert("RGB")
-    )
-    vae_embed_visual_pil.save(vae_image_path)
-
-    with open(npy_filename, "wb") as outfile:
-        np.save(outfile, vae_embed.detach().cpu().numpy())
-    decoded_image_pil = TF.to_pil_image(
-        decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
-    )
-    decoded_image_pil.save(decoded_image_path)
-    return decoded_image_path, vae_image_path, npy_filename, score
+    target_dir = base_dir.joinpath("img", f"{batch_index:3f}")
+    decoded_image_path = base_dir.joinpath("img", target_dir, f"simulation_{simulation_iter}:.3f{log_description}.png")
+    vae_encoding_as_npy = base_dir.joinpath("vae_npy").joinpath(log_description + ".npy")
+    return decoded_image_path, vae_encoding_as_npy, score
 
 
 def pack_model_kwargs(
