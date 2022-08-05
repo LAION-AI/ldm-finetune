@@ -383,7 +383,6 @@ def log_autoedit_sample(
     prefix: str,
     batch_index: int,
     simulation_iter: int,
-    vae_embed: torch.Tensor,
     decoded_image: torch.Tensor,
     score: torch.Tensor,
     base_dir: Path,
@@ -391,13 +390,12 @@ def log_autoedit_sample(
     """
     Logs an autoedit sample to a file.
     """
-    base_dir = base_dir / prefix
-    log_description = f"{prefix}_batch_{batch_index:03}_score_{score.item():.3f}"
-
-    target_dir = base_dir.joinpath("img", f"{batch_index:3f}")
-    decoded_image_path = base_dir.joinpath("img", target_dir, f"simulation_{simulation_iter}:.3f{log_description}.png")
-    vae_encoding_as_npy = base_dir.joinpath("vae_npy").joinpath(log_description + ".npy")
-    return decoded_image_path, vae_encoding_as_npy, score
+    base_dir = base_dir / prefix / f'batchidx_{batch_index:04d}'
+    decoded_image_path = base_dir.joinpath("img", base_dir, f"simulation_{simulation_iter:04d}_{score.item():.3f}.png")
+    decoded_image_path.parent.mkdir(parents=True, exist_ok=True)
+    pil_image = TF.to_pil_image(decoded_image.squeeze(0).add(1).div(2).clamp(0, 1))
+    pil_image.save(decoded_image_path)
+    return decoded_image_path, score
 
 
 def pack_model_kwargs(
