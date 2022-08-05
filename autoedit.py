@@ -1,4 +1,3 @@
-from tqdm import tqdm
 import argparse
 import datetime
 import json
@@ -9,15 +8,16 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import wandb
 from torchvision import transforms
 from torchvision.transforms import functional as TF
+from tqdm import tqdm
 
+import wandb
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, clip_encode_cfg_onnx, create_cfg_fn, bert_encode_cfg,
-    load_aesthetic_vit_l_14_embed, load_bert, load_clip_onnx_model,
-    load_diffusion_model, load_vae, log_autoedit_sample, pack_model_kwargs,
-    prepare_edit)
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg,
+    clip_encode_cfg_onnx, create_cfg_fn, load_aesthetic_vit_l_14_embed,
+    load_bert, load_clip_onnx_model, load_diffusion_model, load_vae,
+    log_autoedit_sample, pack_model_kwargs, prepare_edit)
 from guided_diffusion.respace import SpacedDiffusion
 
 OUTPUT_DIR = "autoedit_outputs_" + datetime.datetime.now().strftime("%d%H%M%S")
@@ -70,7 +70,6 @@ def autoedit(
             image_emb_norm, text_emb_norm, dim=-1
         )
 
-
     population = []
     population_scores = []
     for mutation_idx in range(num_mutations):
@@ -93,7 +92,9 @@ def autoedit(
         result_batch = []
         improved_result_batch = []
 
-        for batch_idx, current_vae_tensor in enumerate(sample["pred_xstart"][:batch_size]):
+        for batch_idx, current_vae_tensor in enumerate(
+            sample["pred_xstart"][:batch_size]
+        ):
             # kl-f8 vqgan embedding needs to be divided by 0.18215 to get the correct range
             normalized_vae_image_embed = init_vae_sample(current_vae_tensor)
             decoded_image = decode_vae_sample(normalized_vae_image_embed)
@@ -105,26 +106,24 @@ def autoedit(
                 improved_result_batch.append(current_vae_tensor.unsqueeze(0))
                 population[batch_idx] = current_vae_tensor.unsqueeze(0)
                 population_scores[batch_idx] = similarity
-                scored_changed = True
 
-            decoded_image_path, npy_filename, _ = log_autoedit_sample(
+            decoded_image_path, npy_filename = log_autoedit_sample(
                 prefix=prefix,
                 batch_index=batch_idx,
                 simulation_iter=mutation_idx,
-                vae_embed=normalized_vae_image_embed,
                 decoded_image=decoded_image,
                 score=similarity,
                 base_dir=Path(OUTPUT_DIR),
             )
 
-            result_batch.append(
-                (decoded_image_path, npy_filename, similarity)
+            result_batch.append((decoded_image_path, npy_filename, similarity))
+        if len(improved_result_batch) > 0:
+            tqdm.write(
+                f"Population #{mutation_idx} improved CLIP score for {len(improved_result_batch)}/{batch_size} images"
             )
-        if scored_changed:
-            print(f"Population #{mutation_idx} improved score for {len(result_batch)}/{batch_size} images")
-            yield result_batch  # this returns the result batch to the caller
         else:
-            print("No improvement this batch. Starting next iteration.")
+            tqdm.write(f"Population #{mutation_idx} did not improve")
+        yield result_batch
 
         # begin next mutation
         image_embed = torch.cat(population + population, dim=0)
@@ -185,7 +184,9 @@ def main(args):
     print(f"Loading vae")
     ldm = load_vae(kl_path=args.kl_path, device=device, use_fp16=True)
     print(f"Loading CLIP")
-    clip_model, clip_preprocess = load_clip_onnx_model(device, visual_path="visual.onnx", textual_path="textual.onnx")
+    clip_model, clip_preprocess = load_clip_onnx_model(
+        device, visual_path="visual.onnx", textual_path="textual.onnx"
+    )
     print(f"Loading BERT")
     bert = load_bert(args.bert_path, device, use_fp16=True)
 
@@ -272,17 +273,13 @@ def main(args):
                     ending_threshold=args.ending_threshold,
                 )
             ),
-            desc="Running Autoedit",
             total=args.iterations,
-            leave=True
         )
 
         for mutation_idx, results in progress_bar:
-            for batch_idx, (
-                decoded_image_path,
-                npy_filename,
-                similarity
-            ) in enumerate(results):
+            for batch_idx, (decoded_image_path, npy_filename, similarity) in enumerate(
+                results
+            ):
                 if use_wandb:
                     eval_table.add_data(
                         mutation_idx,
