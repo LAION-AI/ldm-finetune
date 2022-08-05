@@ -1,23 +1,28 @@
 import os
 import random
-import typing
-from pathlib import Path
 import re
+import typing
 import unicodedata
-
+from pathlib import Path
 
 import torch
+from dist.clip_custom import clip
 from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg,
-    load_aesthetic_vit_l_14_embed, load_bert,
-    load_clip_model_and_transform, load_diffusion_model, load_vae, pack_model_kwargs,
-    prepare_edit)
+    average_prompt_embed_with_aesthetic_embed,
+    bert_encode_cfg,
+    load_aesthetic_vit_l_14_embed,
+    load_bert,
+    load_clip_model_and_transform,
+    load_diffusion_model,
+    load_vae,
+    pack_model_kwargs,
+    prepare_edit,
+)
 from guided_diffusion.script_util import create_gaussian_diffusion
-from dist.clip_custom import clip
 
 
 def set_requires_grad(model, value):
@@ -54,9 +59,7 @@ def prepare_inpaint_models(
     vae_backbone = load_vae(kl_path=KL_PATH, device=device, use_fp16=use_fp16)
 
     print(f"Loading CLIP text encoder from textual.onnx")
-    clip_model, clip_preprocess = load_clip_model_and_transform(
-        device
-    )
+    clip_model, clip_preprocess = load_clip_model_and_transform(device)
 
     print(f"Loading BERT text encoder from {BERT_PATH}")
     bert = load_bert(BERT_PATH, device, use_fp16=use_fp16)
@@ -69,7 +72,6 @@ def prepare_inpaint_models(
         clip_preprocess=clip_preprocess,
         bert=bert,
     )
-
 
 
 def slugify(value, allow_unicode=False):

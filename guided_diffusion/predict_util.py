@@ -1,5 +1,4 @@
 import os
-import sys
 import typing
 from email.mime import base
 from pathlib import Path
@@ -7,26 +6,17 @@ from pathlib import Path
 import numpy as np
 import torch
 from dist.clip_custom import clip
-from dist.clip_onnx import clip_onnx
 from encoders.modules import BERTEmbedder
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
-from torchvision.transforms import (
-    CenterCrop,
-    Compose,
-    InterpolationMode,
-    Normalize,
-    Resize,
-    ToTensor,
-)
+from torchvision.transforms import (CenterCrop, Compose, InterpolationMode,
+                                    Normalize, Resize, ToTensor)
 from torchvision.transforms import functional as TF
 
-from guided_diffusion.script_util import (
-    create_gaussian_diffusion,
-    create_model_and_diffusion,
-    model_and_diffusion_defaults,
-)
+from guided_diffusion.script_util import (create_gaussian_diffusion,
+                                          create_model_and_diffusion,
+                                          model_and_diffusion_defaults)
 
 # load from environment if set, otherwise use "outputs"
 BASE_DIR = Path(os.environ.get("BASE_DIR", "outputs"))

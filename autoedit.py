@@ -64,8 +64,7 @@ def autoedit(
             decoded_image.squeeze(0).add(1).div(2).clamp(0, 1)
         )
         clip_input = clip_preprocess(decoded_image_as_pil).unsqueeze(0).to(device)
-        clip_input = clip_input.detach().cpu().numpy().astype(np.float32)
-        clip_image_embed = torch.Tensor(clip_model.encode_image(clip_input)).to(device)
+        clip_image_embed = clip_model.encode_image(clip_input).to(device)
         image_emb_norm = clip_image_embed / clip_image_embed.norm(dim=-1, keepdim=True)
         return torch.nn.functional.cosine_similarity(
             image_emb_norm, text_emb_norm, dim=-1
@@ -209,8 +208,8 @@ def main(args):
         text_emb, text_blank = bert_encode_cfg(
             text, args.negative, args.batch_size, device, bert
         )
-        text_tokens = clip.tokenize([text] * args.batch_size, truncate=True)
-        negative_tokens = clip.tokenize([args.negative] * args.batch_size, truncate=True)
+        text_tokens = clip.tokenize([text] * args.batch_size, truncate=True).to(device)
+        negative_tokens = clip.tokenize([args.negative] * args.batch_size, truncate=True).to(device)
         text_emb_clip = clip_model.encode_text(text_tokens).to(device).float()
         text_emb_clip_blank = clip_model.encode_text(negative_tokens).to(device).float()
         text_emb_norm = text_emb_clip[0] / text_emb_clip[0].norm(dim=-1, keepdim=True)

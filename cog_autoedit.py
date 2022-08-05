@@ -7,8 +7,8 @@ import torch
 
 from autoedit import autoedit
 from guided_diffusion.predict_util import (
-    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg, clip_encode_cfg,
-    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model,
+    average_prompt_embed_with_aesthetic_embed, bert_encode_cfg,
+    load_aesthetic_vit_l_14_embed, load_bert, load_clip_model_and_transform,
     load_diffusion_model, load_vae, pack_model_kwargs, prepare_edit)
 
 os.environ[
@@ -40,7 +40,7 @@ class Predictor(cog.BasePredictor):
         self.ldm = load_vae(kl_path=KL_PATH, device=self.device)
         self.ldm = self.ldm
         print(f"Loading CLIP")
-        self.clip_model, self.clip_preprocess = load_clip_model(self.device)
+        self.clip_model, self.clip_preprocess = load_clip_model_and_transform(self.device)
         print(f"Loading BERT")
         self.bert = load_bert(BERT_PATH, self.device)
         self.bert = self.bert

@@ -100,7 +100,9 @@ def load_data(
         raise ValueError("unspecified data directory")
 
     if ".tar" not in data_dir:
-        print(f"Detected COCO-style (.txt/.jpg) dataset. Using CaptionImageLoader on {data_dir}.")
+        print(
+            f"Detected COCO-style (.txt/.jpg) dataset. Using CaptionImageLoader on {data_dir}."
+        )
         all_files = _list_image_files_recursively(data_dir)
         print(f"Found {len(all_files)} files")
         assert len(all_files) > 0, "no files found"
@@ -118,7 +120,9 @@ def load_data(
         while True:
             yield from loader
     else:
-        print("Detected webdataset (.tar files) dataset. Using WebDatasetLoader on {data_dir}.")
+        print(
+            "Detected webdataset (.tar files) dataset. Using WebDatasetLoader on {data_dir}."
+        )
         wds_uris = parse_data_dir(data_dir)
         assert len(wds_uris) > 0, "no files found"
         print(f"Found {len(wds_uris)} tar files of total {len(wds_uris)}")
